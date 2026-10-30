@@ -106,6 +106,13 @@ struct UsagePanel: View {
             .keyboardShortcut(",")
             Spacer()
             Menu {
+                Button("Quick Switch…  ⌥⌘A") { model.showQuickSwitcher() }
+                Button("Last 7 Days…") {
+                    openWindow(id: "report")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+                Divider()
+                Toggle("Switch Automatically at a Limit", isOn: $model.autoSwitch)
                 Toggle("Live Claude Usage from Anthropic", isOn: Binding(get: { model.monitor.liveClaude }, set: { model.monitor.liveClaude = $0 }))
                 Toggle("Open at Login", isOn: Binding(get: { model.opensAtLogin }, set: { _ in model.toggleOpenAtLogin() }))
                 Divider()
@@ -144,6 +151,8 @@ private struct RowActions {
     let dismiss: () -> Void
     let logIn: () -> Void
     let reveal: () -> Void
+    /// Offered on an account at its limit with a session running: the target's name, and the move.
+    let continueElsewhere: (target: String, run: () -> Void)?
     /// Offered on a Claude account with no reading: turns on live usage.
     let checkLive: (() -> Void)?
 }
@@ -192,6 +201,14 @@ private struct ToolSection: View {
         .padding(.horizontal, 6)
     }
 
+    /// Where a conversation could move when `account` is at its limit and in use.
+    private func continueTarget(for account: Account) -> Account? {
+        guard Sessions.supports(account.tool), model.monitor.readings[account.id]?.isCapped(at: now) == true,
+              model.monitor.isActive(account, at: now)
+        else { return nil }
+        return registry.roomiest(account.tool, model.monitor.readings, excluding: account.id, at: now)
+    }
+
     private func actions(for account: Account) -> RowActions {
         func set(_ next: RowFocus?) { withAnimation(.easeOut(duration: 0.15)) { focus = next } }
         let picked = registry.isCurrent(account)
@@ -210,6 +227,7 @@ private struct ToolSection: View {
             dismiss: { set(nil) },
             logIn: { model.logIn(account) },
             reveal: { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: account.folder())]) },
+            continueElsewhere: continueTarget(for: account).map { target in (target.label, { model.continueElsewhere(account) }) },
             checkLive: account.tool == .claude && !model.monitor.liveClaude ? { model.monitor.liveClaude = true } : nil)
     }
 }
@@ -298,6 +316,11 @@ private struct UsageRow: View {
                     .help("Projected from average use since the window opened")
             }
             loginStatus
+            if let move = actions.continueElsewhere {
+                Button("Continue this conversation on \(move.target)", action: move.run)
+                    .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.pick)
+                    .help("Moves the latest conversation to \(move.target) and resumes it there, in Terminal")
+            }
             if let problem { Text(problem).problem() }
         }
         .padding(.horizontal, 8).padding(.vertical, 7)

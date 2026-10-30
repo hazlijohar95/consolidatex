@@ -40,7 +40,7 @@ public struct Registry: Codable, Equatable, Sendable {
     /// Words acc treats as subcommands or tool names, so they can never be account ids.
     public static let reservedIDs: Set<String> = Set(Tool.allCases.map(\.rawValue) + [
         "add", "auto", "continue", "current", "dir", "doctor", "help", "launch", "login", "ls", "list",
-        "rename", "rm", "run", "setup", "shell-init", "statusline", "sync", "ui", "use", "version", "kiro",
+        "rename", "report", "rm", "run", "setup", "shell-init", "statusline", "sync", "ui", "use", "version", "kiro",
     ])
 
     /// A folder `acc rm` took out of the list, so discovery doesn't bring it back.

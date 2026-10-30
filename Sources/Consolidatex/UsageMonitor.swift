@@ -30,10 +30,22 @@ final class UsageMonitor: ObservableObject {
     /// The installed tools, as the app found them on the login shell's PATH.
     var runners: [Tool: Runner] = [:]
 
+    /// Accounts that reached a limit, or came off one, since the previous refresh.
+    struct LimitChanges {
+        var capped: [String] = []
+        var ready: [String] = []
+    }
+
+    /// Called after every refresh, so the app can act on limits; resets happen by the clock, not only on new readings.
+    var onRefresh: ((LimitChanges, Date) -> Void)?
+    let history: UsageHistory
+
     private let usages: Usages
     private var schedule: LiveUsage.Schedule
     /// Capped as of the previous refresh, to notice when one comes back.
-    private var capped: Set<String> = []
+    private var capped: Set<String>?
+    private var sampledAt: [String: Date] = [:]
+    private var prunedAt: [String: Date] = [:]
     private var logs: [String: TranscriptLog] = [:]
     /// Accounts whose login was read, including those with none to find (opencode, logged out).
     private var identitiesRead: Set<String> = []
@@ -47,11 +59,12 @@ final class UsageMonitor: ObservableObject {
     }
 
     init(store: RegistryStore) {
-        usages = Usages(store: UsageStore(registryStore: store))
+        let usageStore = UsageStore(registryStore: store)
+        usages = Usages(store: usageStore)
+        history = UsageHistory(usageStore: usageStore)
         liveClaude = UserDefaults.standard.bool(forKey: Keys.liveClaude)
         schedule = UserDefaults.standard.data(forKey: Keys.schedule)
             .flatMap { try? JSONDecoder().decode(LiveUsage.Schedule.self, from: $0) } ?? .init()
-        ReadyNotice.prepare()
         timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
         }
@@ -137,37 +150,23 @@ final class UsageMonitor: ObservableObject {
     private func update(_ readings: [String: Usage], at now: Date) {
         if readings != self.readings { self.readings = readings }
         let nowCapped = Set(readings.filter { $0.value.isCapped(at: now) }.keys)
-        for id in capped.subtracting(nowCapped) {
-            if let account = registry.account(id: id) { ReadyNotice.post(account, readings[id]) }
-        }
+        // The first refresh after launch has nothing to compare with, so it reports no changes.
+        let changes = capped.map { LimitChanges(capped: Array(nowCapped.subtracting($0)), ready: Array($0.subtracting(nowCapped))) } ?? LimitChanges()
         capped = nowCapped
-    }
-}
-
-/// "work is ready": a notification when a capped account's limit resets.
-@MainActor
-enum ReadyNotice {
-    /// Notifications need an app bundle; a bare `swift run` has none.
-    private static let center = Bundle.main.bundleIdentifier == nil ? nil : UNUserNotificationCenter.current()
-
-    static func prepare() {
-        center?.delegate = Presenter.shared
-        center?.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        record(readings, at: now)
+        onRefresh?(changes, now)
     }
 
-    static func post(_ account: Account, _ usage: Usage?) {
-        let content = UNMutableNotificationContent()
-        content.title = "\(account.label) is ready"
-        content.body = "Its \(account.tool.spec.name) limit has reset" + (usage.map { " (\(UsageFormat.summary($0, tool: account.tool)))" } ?? "") + "."
-        content.sound = .default
-        center?.add(UNNotificationRequest(identifier: "ready-\(account.id)", content: content, trigger: nil))
-    }
-
-    /// Without this, macOS drops banners while the panel is open, because the app is frontmost then.
-    private final class Presenter: NSObject, UNUserNotificationCenterDelegate, Sendable {
-        static let shared = Presenter()
-
-        func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async
-            -> UNNotificationPresentationOptions { [.banner, .sound] }
+    /// A history sample per account every 15 minutes, for the weekly report.
+    private func record(_ readings: [String: Usage], at now: Date) {
+        for (id, usage) in readings where now.timeIntervalSince(sampledAt[id] ?? .distantPast) >= UsageHistory.spacing {
+            sampledAt[id] = now
+            try? history.append(UsageHistory.Sample(usage, at: now), for: id)
+            // The app can run for months, so old samples go once a day rather than once per launch.
+            if now.timeIntervalSince(prunedAt[id] ?? .distantPast) >= 86_400 {
+                prunedAt[id] = now
+                try? history.prune(id, at: now)
+            }
+        }
     }
 }

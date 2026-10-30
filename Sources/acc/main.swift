@@ -12,6 +12,7 @@ let usage = """
       acc <tool> [<account>]     same, among one tool's accounts (acc codex work)
       acc ls [<tool>] [--json]   list accounts with last-seen usage (● = current)
       acc auto [<tool>]          switch to the account with the most quota left
+      acc report                 the last 7 days: weekly use and hours capped, per account
       acc continue [<account>] [--session <id>]
                                  resume this folder's latest conversation on another account
                                  (default: the roomiest); Claude Code and Codex
@@ -240,6 +241,28 @@ func continueSession(_ ref: String?, sessionID: String?) throws -> Never {
     throw try Runner.locate(tool).exec(account: target, arguments: Sessions.resumeArguments(session))
 }
 
+/// The last 7 days per account, from the history the menu bar app records while it runs.
+func report() throws {
+    let registry = try store.load()
+    let history = UsageHistory(usageStore: usages.store)
+    let now = Date()
+    let reports = registry.ordered.map { a in
+        WeekReport(account: a, samples: history.samples(for: a.id, since: now - WeekReport.span), current: usages.usage(for: a), at: now)
+    }
+    guard reports.contains(where: { $0.coveredHours > 0 }) else {
+        throw AccError.usage("not enough history yet: the Consolidatex menu bar app records usage every 15 minutes while it runs")
+    }
+    let width = reports.map(\.account.id.count).max() ?? 0
+    say("Last 7 days")
+    for r in reports {
+        let week = r.weekUsed.map { "week \(Int($0.rounded()))%" } ?? "no weekly limit"
+        let capped = r.cappedHours >= 0.5 ? "capped \(Int(r.cappedHours.rounded()))h" : "never capped"
+        say("  \(pad(r.account.tool.rawValue, 8))  \(pad(r.account.id, width))  \(pad(week, 15))  \(pad(capped, 12))  \(r.note ?? "")")
+    }
+    let covered = reports.map(\.coveredHours).max() ?? 0
+    if covered < 24 * 6 { say("\nHistory covers \(Int(covered.rounded()))h of the week so far.") }
+}
+
 // MARK: setup
 
 func ask(_ question: String, assumeYes: Bool) -> Bool {
@@ -388,6 +411,9 @@ func main() throws {
                 say("  \(UsageFormat.summary(usage[best.id], tool: t))")
             }
         }
+
+    case "report":
+        try report()
 
     case "continue":
         let session = try option("--session", in: &args)

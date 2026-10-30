@@ -492,3 +492,101 @@ func write(_ text: String, to path: String) {
         #expect(throws: AccError.invalidRegistry(["more than one Codex account uses /abs/side"])) { try r.validate() }
     }
 }
+
+@Suite struct AutoSwitching {
+    @Test func movesOffACappedPickToTheMostRoom() {
+        #expect(sample.autoPick(.claude, ["cto": usage(100), "personal": usage(10), "team": usage(60)], detour: nil, at: t0)?.id == "personal")
+        #expect(sample.autoPick(.claude, ["cto": usage(100), "personal": usage(95), "team": usage(99)], detour: nil, at: t0) == nil)
+    }
+
+    @Test func staysWhileThePickHasRoom() {
+        #expect(sample.autoPick(.claude, ["cto": usage(80), "personal": usage(1)], detour: nil, at: t0) == nil)
+    }
+
+    @Test func returnsAlongTheDetourOnlyWhileItStillApplies() throws {
+        var r = sample
+        try r.use("personal")
+        let detour = Detour(from: "cto", to: "personal")
+        #expect(r.autoPick(.claude, ["cto": usage(20), "personal": usage(10)], detour: detour, at: t0)?.id == "cto")
+        #expect(r.autoPick(.claude, ["cto": usage(100), "personal": usage(10)], detour: detour, at: t0) == nil)
+        // Reset on 5h but at 98% of the week: going back now would only bounce.
+        #expect(r.autoPick(.claude, ["cto": usage(0, 98), "personal": usage(10)], detour: detour, at: t0) == nil)
+        // Someone picked another account by hand since: the app leaves it alone.
+        try r.use("team")
+        #expect(r.autoPick(.claude, ["cto": usage(20), "team": usage(10)], detour: detour, at: t0) == nil)
+    }
+
+    @Test func aDetourRemembersThePersonsPickAcrossMoves() {
+        let first = Detour.after(moving: "cto", to: "personal", existing: nil)
+        #expect(first == Detour(from: "cto", to: "personal"))
+        #expect(Detour.after(moving: "personal", to: "team", existing: first) == Detour(from: "cto", to: "team"))
+        #expect(Detour.after(moving: "personal", to: "cto", existing: first) == nil)
+    }
+}
+
+@Suite struct LatestConversation {
+    @Test func claudeTakesTheNewestTranscriptAndItsFolder() throws {
+        let home = tempHome(), projects = home + "/.claude-c/projects"
+        write(#"{"type":"user","cwd":"/old"}"# + "\n", to: projects + "/-old/aaa.jsonl")
+        try FileManager.default.setAttributes([.modificationDate: Date() - 3600], ofItemAtPath: projects + "/-old/aaa.jsonl")
+        // The session started in /work/app, then cd'd into src: it is still filed, and found, under /work/app.
+        write(#"{"type":"user","cwd":"/work/app"}"# + "\n" + #"{"type":"user","cwd":"/work/app/src"}"# + "\n", to: projects + "/-work-app/bbb.jsonl")
+        let account = Account(id: "c", tool: .claude, label: "C", configDir: "~/.claude-c")
+        #expect(Sessions.latest(account, home: home) == Sessions.Conversation(id: "bbb", folder: "/work/app"))
+    }
+
+    @Test func codexTakesTheNewestRollout() {
+        let home = tempHome(), id = "0199a1b2-aaaa-7e5f-8a9b-0c1d2e3f4a5b"
+        write(#"{"type":"session_meta","payload":{"id":"\#(id)","cwd":"/work/api"}}"# + "\n",
+              to: home + "/.codex-w/sessions/2026/10/30/rollout-2026-10-30T11-00-00-\(id).jsonl")
+        let account = Account(id: "w", tool: .codex, label: "W", configDir: "~/.codex-w")
+        #expect(Sessions.latest(account, home: home) == Sessions.Conversation(id: id, folder: "/work/api"))
+    }
+}
+
+@Suite struct History {
+    @Test func appendsReadsAndPrunes() throws {
+        let history = UsageHistory(usageStore: UsageStore(registryStore: tempStore()))
+        let old = UsageHistory.Sample(at: t0 - 40 * 86_400, load: 50, week: 20)
+        try history.append(old, for: "a")
+        try history.append(UsageHistory.Sample(usage(30, 70), at: t0), for: "a")
+        #expect(history.samples(for: "a", since: t0 - 100 * 86_400).map(\.load) == [50, 70])
+        #expect(history.samples(for: "a", since: t0 - 1).first?.week == 70)
+        try history.prune("a", at: t0)
+        #expect(history.samples(for: "a", since: .distantPast).count == 1)
+    }
+
+    @Test func weekReportCountsCappedHoursAndCoverage() {
+        // A sample every 15 minutes: an hour at the limit inside two hours of history.
+        let loads: [Double] = [40, 100, 100, 100, 100, 60, 30, 20, 10]
+        let samples = loads.enumerated().map { i, load in UsageHistory.Sample(at: t0 - Double(loads.count - i) * 900, load: load, week: 30) }
+        let r = WeekReport(account: sample.account(id: "cto")!, samples: samples, current: usage(5, 45), at: t0)
+        #expect(r.cappedHours == 1)
+        #expect(r.coveredHours == 2)
+        #expect(r.weekUsed == 45)
+        #expect(r.note == "capped 1h this week")
+    }
+
+    @Test func idleNoteNeedsThreeDaysOfHistory() {
+        let days = (0..<(4 * 96)).map { UsageHistory.Sample(at: t0 - Double($0) * 900, load: 2, week: 3) }
+        let account = sample.account(id: "side")!
+        #expect(WeekReport(account: account, samples: days, current: nil, at: t0).note == "mostly idle: 3% of its week used")
+        #expect(WeekReport(account: account, samples: Array(days.prefix(8)), current: nil, at: t0).note == nil)
+    }
+}
+
+@Suite struct LatestCodexByWriteTime {
+    @Test func aLongSessionStartedEarlierStillWins() throws {
+        let home = tempHome(), day = home + "/.codex-w/sessions/2026/10/30"
+        let early = "0199a1b2-0000-7e5f-8a9b-0c1d2e3f4a5b", late = "0199a1b2-1111-7e5f-8a9b-0c1d2e3f4a5b"
+        write(#"{"type":"session_meta","payload":{"id":"\#(early)","cwd":"/long"}}"# + "\n", to: day + "/rollout-2026-10-30T08-00-00-\(early).jsonl")
+        write(#"{"type":"session_meta","payload":{"id":"\#(late)","cwd":"/short"}}"# + "\n", to: day + "/rollout-2026-10-30T09-00-00-\(late).jsonl")
+        try FileManager.default.setAttributes([.modificationDate: Date() - 7200], ofItemAtPath: day + "/rollout-2026-10-30T09-00-00-\(late).jsonl")
+        let account = Account(id: "w", tool: .codex, label: "W", configDir: "~/.codex-w")
+        #expect(Sessions.latest(account, home: home)?.folder == "/long")
+    }
+
+    @Test func reportIsACommandNotAnID() {
+        #expect(Registry.reservedIDs.contains("report"))
+    }
+}

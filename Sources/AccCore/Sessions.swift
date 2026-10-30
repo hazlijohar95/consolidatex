@@ -11,7 +11,27 @@ public struct Session: Equatable, Sendable {
 /// Moving a conversation to another account of the same tool, so it can continue when
 /// the first account runs out. Only tools whose transcripts are plain files support it.
 public enum Sessions {
+    /// A conversation and the folder it ran in: what `acc continue <account> --session <id>` needs, run there.
+    public struct Conversation: Equatable, Sendable {
+        public let id: String
+        public let folder: String
+
+        public init(id: String, folder: String) {
+            self.id = id
+            self.folder = folder
+        }
+    }
+
     public static func supports(_ tool: Tool) -> Bool { tool != .opencode }
+
+    /// The account's most recent conversation, to move elsewhere when the account runs out.
+    public static func latest(_ account: Account, home: String = userHome()) -> Conversation? {
+        switch account.tool {
+        case .claude: ClaudeSupport.latestConversation(account, home: home)
+        case .codex: CodexSupport.latestConversation(account, home: home)
+        case .opencode: nil
+        }
+    }
 
     /// Every account's conversations started in `cwd`, newest first (optionally only `tool`'s).
     public static func forProject(_ cwd: String, in registry: Registry, tool: Tool? = nil, home: String = userHome()) -> [Session] {

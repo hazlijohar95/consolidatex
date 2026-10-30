@@ -100,18 +100,32 @@ public enum CodexSupport {
 
     /// Codex sessions started in `cwd`, read from the session_meta line at the top of each rollout.
     static func sessions(in cwd: String, account: Account, home: String, scanning limit: Int = 300) -> [Session] {
-        struct Meta: Decodable { let id: String?; let cwd: String? }
-        struct Head: Decodable { let type: String; let payload: Meta }
         let target = canonical(cwd)
         return rollouts(home: account.folder(home: home), limit: limit).compactMap { file in
-            guard let first = firstLine(of: file),
-                  let head = try? JSONDecoder().decode(Head.self, from: Data(first.utf8)),
-                  head.type == "session_meta", let dir = head.payload.cwd, canonical(dir) == target,
-                  let id = head.payload.id ?? sessionID(fromFileName: file.lastPathComponent),
+            guard let meta = conversation(in: file), canonical(meta.folder) == target,
                   let date = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date
             else { return nil }
-            return Session(id: id, account: account, transcript: file.path, modified: date)
+            return Session(id: meta.id, account: account, transcript: file.path, modified: date)
         }
+    }
+
+    /// The rollout written most recently. Names sort by start time, so a long session started
+    /// yesterday can still be the live one; the newest ten by name are compared by write time.
+    static func latestConversation(_ account: Account, home: String) -> Sessions.Conversation? {
+        let modified = { (url: URL) in (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast }
+        return rollouts(home: account.folder(home: home), limit: 10).max { modified($0) < modified($1) }.flatMap(conversation(in:))
+    }
+
+    /// The conversation id and folder from the session_meta line at the top of a rollout.
+    static func conversation(in file: URL) -> Sessions.Conversation? {
+        struct Meta: Decodable { let id: String?; let cwd: String? }
+        struct Head: Decodable { let type: String; let payload: Meta }
+        guard let first = firstLine(of: file),
+              let head = try? JSONDecoder().decode(Head.self, from: Data(first.utf8)),
+              head.type == "session_meta", let folder = head.payload.cwd,
+              let id = head.payload.id ?? sessionID(fromFileName: file.lastPathComponent)
+        else { return nil }
+        return Sessions.Conversation(id: id, folder: folder)
     }
 
     /// rollout-2026-10-30T10-00-00-<uuid>[_<uuid>].jsonl → <uuid>
@@ -128,6 +142,16 @@ public enum CodexSupport {
         let relative = [day.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent,
                         day.deletingLastPathComponent().lastPathComponent, day.lastPathComponent].joined(separator: "/")
         try copyReplacing([source], into: URL(fileURLWithPath: account.folder(home: home) + "/sessions/" + relative))
+    }
+
+    /// The complete lines in the first `bytes` of a file.
+    static func headLines(of url: URL, bytes: Int) -> [String] {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { try? handle.close() }
+        let chunk = (try? handle.read(upToCount: bytes)) ?? Data()
+        var lines = String(decoding: chunk, as: UTF8.self).split(separator: "\n").map(String.init)
+        if chunk.count == bytes, !lines.isEmpty { lines.removeLast() }
+        return lines
     }
 
     static func firstLine(of url: URL) -> String? {

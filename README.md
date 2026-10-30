@@ -51,6 +51,18 @@ claude @work
 
 `<name>` can be the account's id, its position in `acc ls`, or any part of its name or email that matches only one account.
 
+To switch from anywhere, press **⌥⌘A**. Use the arrow keys to choose an account, then press Return.
+
+## When an account hits its limit
+
+When the account new sessions start on hits a limit, Consolidatex moves new sessions to the account with the most tokens left and tells you. When the first account resets, it moves them back. Picking an account yourself ends the move. To turn this off, open the panel's **⋯** menu and clear **Switch Automatically at a Limit**.
+
+If you were in a conversation on that account, the notification offers to continue it. Click it, and Terminal opens in that conversation's folder and runs `acc continue` to resume the conversation on the other account. The account's row in the panel offers the same.
+
+## See your week
+
+Open **Last 7 Days…** from the panel's **⋯** menu, or run `acc report`. For each account it shows how much of its weekly limit you used and how long it sat at a limit. It also points out accounts that were mostly idle and accounts that kept hitting their limit. The app records usage every 15 minutes while it runs, so the report fills in over the first week.
+
 ## Watch your usage
 
 The menu bar shows the usage of the account you're working in. Click it for the panel:
@@ -78,6 +90,7 @@ Where the numbers come from, by tool:
 | `claude @<name> …` | Run one session on another account. |
 | `acc ls [--json]` | List accounts with their last known usage. |
 | `acc auto` | Switch each tool to its account with the most tokens left. |
+| `acc report` | Show the last 7 days: weekly use and hours at a limit, per account. |
 | `acc continue [<name>]` | Move this folder's latest conversation to another account and resume it there. Claude Code and Codex only. |
 | `acc add codex "Client A"` | Add a subscription: a new folder, shared config, then the tool's own login. |
 | `acc login`, `acc rename`, `acc rm` | Log an account in again, rename it, or take it out of the list. `rm` keeps its folder. |

@@ -88,6 +88,20 @@ Two decisions read from usage:
 - `Registry.roomiest` suggests the account with the most of its limits left. It skips accounts at 90% or more. The status line shows the suggestion once the current account reaches 90%, and the panel marks it **Most tokens left**.
 - `Usage.forecast` projects when a window fills if use continues at its average rate since the window opened. It reports nothing for a window under 10% used, a window less than a tenth of the way through, or a projection that falls in the past or within the window's last 5%. A 5-hour pace only holds while someone is working, so windows shorter than a day count only while the account is active.
 
+## Following limits
+
+The menu bar app acts on limits, not only shows them. After every refresh, `UsageMonitor` reports which accounts reached a limit and which came off one (`LimitChanges`). `Model.follow` then does three things:
+
+1. **It moves new sessions.** `Registry.autoPick` in `AutoSwitch.swift` decides when. If a tool's current account is at a limit, it picks the account with the most left. A `Detour` records the move, from the account the person picked to the one the app chose. Once the picked account has room again, `autoPick` sends new sessions back along the detour. `Detour.after` keeps the person's pick across several moves in a row. A pick by hand, or a current account that no longer matches the detour, drops the detour, so the app never undoes someone's own choice.
+2. **It offers to move the conversation.** For an account that hit its limit while active, `Sessions.latest` finds its newest conversation and the folder it ran in. The notification's **Continue There** action opens Terminal and runs `acc continue <target> --session <id>` in that folder.
+3. **It announces resets** that the switch back didn't already announce.
+
+Resets happen by the clock, not only when a new reading arrives, so this runs on every refresh rather than only when readings change.
+
+## History and the weekly report
+
+`UsageHistory` stores one sample per account every 15 minutes, as a JSON line in `~/.config/acc/usage/history/<id>.jsonl`. A sample holds the fullest window's share used and the fullest weekly window's share. The app prunes samples older than 35 days once per launch. `WeekReport` reads the last 7 days of samples. It reports the most of the weekly limit used, the hours spent at a limit, and how many hours the history covers. A gap longer than two samples means the app wasn't running, so it counts as two samples' worth. `WeekReport.note` names the one thing worth acting on: an account that was capped for an hour or more, or one that used under 15% of its week across at least 3 days of history. The app shows the report in the **Last 7 Days** window, and `acc report` prints it.
+
 ## Activity and identity
 
 `TranscriptLog` is an actor that reads one Claude Code account's transcripts, `projects/**/*.jsonl`, subagents included. On each call it reports the output tokens and requests of the last 5 hours, plus the newest change to any transcript. It reads a transcript changed in the last 5 hours in full once. After that it reads only the bytes added since, so each refresh costs only the new lines. An account counts as active when it wrote something in the last 3 minutes. For Codex and opencode, `Sessions.lastActive` reads the modification time of the newest rollouts or of opencode's database instead.
@@ -117,6 +131,8 @@ The app starts with launchd's short `PATH`, which misses tools installed through
 - `fetchLive` asks the live sources for accounts that are due. It skips accounts whose stored reading is less than 5 minutes old. When it finishes, it runs `readLocal` again.
 
 A slow network request never delays the local numbers. Blocking work, such as waiting on `codex app-server` or on `security` reading the keychain, runs on a dispatch thread. It would otherwise hold one of Swift concurrency's few shared threads, which other tasks need. Only a refresh the user asks for spins the refresh icon. Timer ticks change nothing that is published unless the numbers change, so the views don't redraw for nothing.
+
+⌥⌘A opens `QuickSwitcher`, a floating window for switching from any app. `HotKey` registers the shortcut through Carbon's hot-key API, which needs no accessibility permission.
 
 In the panel, clicking an account asks for confirmation before switching, because a switch changes every terminal's next session. After the first switch, if the shell line is missing, the panel offers to add it and to turn on the status line. Right-click opens **Rename…**, **Log In Again** and **Show in Finder**. Each row's interaction is one `RowFocus` value: confirming, renaming, or none. A row receives everything it can do as one `RowActions` value, so a row only displays and calls back.
 

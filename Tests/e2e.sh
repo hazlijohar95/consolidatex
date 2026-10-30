@@ -160,6 +160,8 @@ check 'rm keeps the folder'               "$([[ -d $H/.codex-client-a ]] && echo
 acc setup --yes >/dev/null
 check 'setup leaves removed folders out'  "$(acc ls | grep -c client-a)" 0
 
+check 'report waits for history'         "$(acc report 2>&1)" 'acc: not enough history yet: the Consolidatex menu bar app records usage every 15 minutes while it runs'
+
 # --- resilience
 print 'not json' > $ACC_HOME/accounts.json
 check 'broken registry still starts tools' "$(sh 'codex z')" $'acc: cannot read '$ACC_HOME$'/accounts.json: not valid JSON\nacc: starting codex on its default account instead (run: acc doctor)\nCODEX=<unset> ARGS=z'

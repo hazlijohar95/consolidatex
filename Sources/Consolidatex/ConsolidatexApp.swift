@@ -1,5 +1,6 @@
 import AccCore
 import AppKit
+import Carbon.HIToolbox
 import Combine
 import ServiceManagement
 import SwiftUI
@@ -34,6 +35,13 @@ final class Model: ObservableObject {
     }
     /// Set when someone picks an account while their terminal doesn't follow picks yet.
     @Published private(set) var offerTerminal = false
+    /// Move new sessions off an account that hits its limit, and back once it resets.
+    @Published var autoSwitch = UserDefaults.standard.object(forKey: "autoSwitch") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(autoSwitch, forKey: "autoSwitch")
+            if !autoSwitch { detours = [:] }
+        }
+    }
 
     let store = RegistryStore.standard()
     let monitor: UsageMonitor
@@ -41,10 +49,21 @@ final class Model: ObservableObject {
     private var watcher: DispatchSourceFileSystemObject?
     private var forwarding: AnyCancellable?
     private var discovery: Timer?
+    private var hotKey: HotKey?
+    private lazy var quickSwitcher = QuickSwitcher(model: self)
+    /// The automatic moves still open, per tool, so each can be undone when its account resets.
+    private var detours: [Tool: Detour] = (UserDefaults.standard.data(forKey: "detours")
+        .flatMap { try? JSONDecoder().decode([Tool: Detour].self, from: $0) }) ?? [:] {
+        didSet { UserDefaults.standard.set(try? JSONEncoder().encode(detours), forKey: "detours") }
+    }
 
     init() {
         monitor = UsageMonitor(store: store)
         forwarding = monitor.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        Notices.prepare()
+        Notices.onContinue = { [weak self] target, conversation in self?.continueConversation(conversation, on: target) }
+        monitor.onRefresh = { [weak self] changes, now in self?.follow(changes, at: now) }
+        hotKey = HotKey(keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(cmdKey | optionKey)) { [weak self] in self?.showQuickSwitcher() }
         LoginShell.adopt(LoginShell.usualPlaces)
         locateTools()
         Task.detached {
@@ -122,7 +141,83 @@ final class Model: ObservableObject {
 
     func use(_ account: Account) {
         edit { try $0.use(account.id) }
+        // A pick by hand ends any automatic move for that tool.
+        detours[account.tool] = nil
         offerTerminal = lastError == nil && !terminalFollows && !UserDefaults.standard.bool(forKey: "terminalOfferDeclined")
+    }
+
+    func showQuickSwitcher() { quickSwitcher.toggle() }
+
+    // MARK: Following usage
+
+    /// After each usage refresh: announce resets, move new sessions off capped accounts and back,
+    /// and offer to move the conversation of an account that hit its limit while in use.
+    private func follow(_ changes: UsageMonitor.LimitChanges, at now: Date) {
+        guard let registry else { return }
+        let usage = monitor.readings
+        let returned = autoSwitch ? switchAroundLimits(usage, at: now) : []
+        for id in changes.ready where !returned.contains(id) {
+            if let account = registry.account(id: id) { Notices.ready(account, usage[id]) }
+        }
+        for id in changes.capped {
+            guard let account = registry.account(id: id), Sessions.supports(account.tool), monitor.isActive(account, at: now) else { continue }
+            let target = registry.roomiest(account.tool, usage, excluding: id, at: now)
+            // Finding the conversation reads the account's transcripts, so it stays off the main thread.
+            Task.detached {
+                let conversation = target == nil ? nil : Sessions.latest(account)
+                await MainActor.run { Notices.atLimit(account, continueOn: target, conversation: conversation) }
+            }
+        }
+    }
+
+    /// Applies `Registry.autoPick` to every tool with a choice. Returns the accounts it moved back to.
+    private func switchAroundLimits(_ usage: [String: Usage], at now: Date) -> Set<String> {
+        guard let registry else { return [] }
+        var returned: Set<String> = []
+        for tool in registry.tools where registry.accounts(for: tool).count > 1 {
+            guard let current = registry.current(for: tool) else { continue }
+            // Someone picked by hand since the move, so it's theirs now.
+            if let detour = detours[tool], detour.to != current.id { detours[tool] = nil }
+            guard let pick = registry.autoPick(tool, usage, detour: detours[tool], at: now) else { continue }
+            let returning = detours[tool]?.from == pick.id
+            edit { try $0.use(pick.id) }
+            guard lastError == nil else { continue }
+            detours[tool] = Detour.after(moving: current.id, to: pick.id, existing: detours[tool])
+            if returning { returned.insert(pick.id) }
+            Notices.switched(from: current, to: pick, returning: returning, until: usage[current.id]?.limitingWindow(at: now)?.resetsAt)
+        }
+        return returned
+    }
+
+    /// Moves `account`'s latest conversation to the account with the most left, and resumes it in Terminal.
+    func continueElsewhere(_ account: Account) {
+        guard let registry, let target = registry.roomiest(account.tool, monitor.readings, excluding: account.id) else {
+            lastError = "No other \(account.tool.spec.name) account has room right now"
+            return
+        }
+        Task.detached {
+            let conversation = Sessions.latest(account)
+            await MainActor.run {
+                guard let conversation else {
+                    self.lastError = "No \(account.tool.spec.name) conversation found on \(account.label)"
+                    return
+                }
+                self.continueConversation(conversation, on: target.id)
+            }
+        }
+    }
+
+    func continueConversation(_ conversation: Sessions.Conversation, on target: String) {
+        // The id comes from a file another program wrote, so every part is quoted.
+        openInTerminal("cd \(Self.quoted(conversation.folder)) && \(Self.acc) continue \(Self.quoted(target)) --session \(Self.quoted(conversation.id))")
+    }
+
+    /// The last 7 days per account, from the history the monitor records.
+    func weekReports(at now: Date = Date()) -> [WeekReport] {
+        (registry?.ordered ?? []).map { account in
+            WeekReport(account: account, samples: monitor.history.samples(for: account.id, since: now - WeekReport.span),
+                       current: monitor.readings[account.id], at: now)
+        }
     }
 
     /// Whether `claude`, `codex` and `opencode` typed in a terminal start on the picked account.
@@ -299,8 +394,10 @@ final class Model: ObservableObject {
     }
 
     /// The acc bundled next to this app, quoted for the shell, so Terminal doesn't need it on PATH.
-    private static let acc = Bundle.main.path(forAuxiliaryExecutable: "acc")
-        .map { "'" + $0.replacingOccurrences(of: "'", with: #"'\''"#) + "'" } ?? "acc"
+    private static let acc = Bundle.main.path(forAuxiliaryExecutable: "acc").map(quoted) ?? "acc"
+
+    /// `text` as one word for zsh.
+    nonisolated static func quoted(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: #"'\''"#) + "'" }
 
     /// Opens Terminal running `command` through a throwaway .command file (no automation permission needed).
     /// An interactive login shell reads .zshrc too, where the tools' PATH entries usually live.
@@ -368,5 +465,10 @@ struct ConsolidatexApp: App {
         .windowResizability(.contentMinSize)
         // `acc ui` opens consolidatex://manage.
         .handlesExternalEvents(matching: ["manage"])
+
+        Window("Last 7 Days", id: "report") {
+            ReportView(model: model)
+        }
+        .windowResizability(.contentMinSize)
     }
 }
