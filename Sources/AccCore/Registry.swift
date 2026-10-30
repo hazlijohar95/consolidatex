@@ -30,7 +30,7 @@ public struct Registry: Codable, Equatable, Sendable {
     /// Words `acc` treats as subcommands, so they can never be account ids.
     public static let reservedIDs: Set<String> = [
         "add", "auto", "continue", "current", "dir", "doctor", "help", "login", "ls", "list", "rename", "rm", "run",
-        "statusline", "sync", "use", "version",
+        "statusline", "sync", "ui", "use", "version",
     ]
 
     public var version: Int
@@ -97,3 +97,5 @@ public struct Registry: Codable, Equatable, Sendable {
         }
     }
 }
+
+extension Account: Identifiable {}

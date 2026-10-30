@@ -1,7 +1,7 @@
 import AccCore
 import Foundation
 
-let version = "1.1.0"
+let version = "1.2.0"
 
 let usage = """
     acc: choose which Claude Code subscription new `claude` sessions use.
@@ -25,6 +25,7 @@ let usage = """
       acc sync [--prune]      link shared config and mirror MCP servers from the primary;
                               --prune also removes MCP servers the primary does not have
       acc statusline          Claude Code status line: shows the account and records its usage
+      acc ui                  open the Claude Accounts window
       acc dir [<account>]     print CLAUDE_CONFIG_DIR for an account (empty = default)
       acc version
 
@@ -188,54 +189,14 @@ func doctor(fix: Bool) throws -> Bool {
         }
     }
     for account in registry.accounts where account.id != registry.primary.id {
-        for issue in sharedIssues(account, primary: registry.primary) { say("! \(pad(account.id, width))  \(issue)") }
+        for issue in Shared.issues(account, primary: registry.primary) { say("! \(pad(account.id, width))  \(issue)") }
     }
     if !emails.isEmpty {
-        try store.update { r in
-            for i in r.accounts.indices { if let e = emails[r.accounts[i].id] { r.accounts[i].email = e } }
-        }
+        try store.update { r in for (id, email) in emails { r.recordEmail(email, for: id) } }
     }
     return healthy
 }
 
-
-/// What differs between an account and the primary's shared config, in words.
-func sharedIssues(_ account: Account, primary: Account) -> [String] {
-    var issues: [String] = []
-    for (item, state) in Shared.links(for: account, primary: primary) {
-        switch state {
-        case .linked: break
-        case .missing: issues.append("\(item) is not shared from \(primary.id) → acc sync")
-        case .local: issues.append("keeps its own \(item) instead of \(primary.id)'s (move it aside, then acc sync)")
-        case .elsewhere(let dest): issues.append("\(item) links to \(dest), not \(primary.id)'s")
-        }
-    }
-    let drift = Shared.mcpDrift(account, primary: primary)
-    if !drift.missing.isEmpty { issues.append("missing MCP servers \(drift.missing.joined(separator: ", ")) → acc sync") }
-    if !drift.different.isEmpty { issues.append("MCP servers differ from \(primary.id): \(drift.different.joined(separator: ", ")) → acc sync") }
-    if !drift.extra.isEmpty {
-        issues.append("has MCP servers \(primary.id) lacks: \(drift.extra.joined(separator: ", ")) (add them to \(primary.id) to share, or acc sync --prune)")
-    }
-    return issues
-}
-
-/// Makes one account match the primary's shared config. Returns what it changed.
-func syncAccount(_ account: Account, primary: Account, claude: Claude, prune: Bool) throws -> [String] {
-    var changes = try Shared.link(account, primary: primary).map { "linked \($0)" }
-    let drift = Shared.mcpDrift(account, primary: primary)
-    let wanted = Shared.mcpServers(primary)
-    for name in drift.missing + drift.different {
-        try claude.addMCPServer(name, definition: wanted[name]!, to: account)
-        changes.append("MCP \(name) " + (drift.missing.contains(name) ? "added" : "updated"))
-    }
-    if prune {
-        for name in drift.extra {
-            try claude.removeMCPServer(name, from: account)
-            changes.append("MCP \(name) removed")
-        }
-    }
-    return changes
-}
 
 /// The roomiest account other than `excluded`, if any is known to have room.
 func roomiest(_ registry: Registry, excluding excluded: String?) -> Account? {
@@ -315,14 +276,24 @@ func main() throws {
         let claude = try Claude.locate()
         var changed = false
         for account in registry.accounts where account.id != registry.primary.id {
-            let changes = try syncAccount(account, primary: registry.primary, claude: claude, prune: prune)
+            let changes = try Shared.sync(account, primary: registry.primary, claude: claude, prune: prune)
             if !changes.isEmpty { say("\(account.id): \(changes.joined(separator: ", "))"); changed = true }
-            for issue in sharedIssues(account, primary: registry.primary) { say("! \(account.id): \(issue)") }
+            for issue in Shared.issues(account, primary: registry.primary) { say("! \(account.id): \(issue)") }
         }
         if !changed { say("everything already matches \(registry.primary.id)") }
 
     case "statusline":
         statusLine()
+
+    case "ui":
+        let open = Process()
+        open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        open.arguments = ["claude-accounts://manage"]
+        try open.run()
+        open.waitUntilExit()
+        if open.terminationStatus != 0 {
+            throw AccError.system("could not open Claude Accounts; is it installed in ~/Applications? (run script/install)")
+        }
 
     case "use":
         guard let ref = args.first else { throw AccError.usage("usage: acc use <account>") }
@@ -354,11 +325,11 @@ func main() throws {
         }
         let claude = try Claude.locate()
         if let registry = existing {
-            for change in try syncAccount(account, primary: registry.primary, claude: claude, prune: false) { say("  \(change)") }
+            for change in try Shared.sync(account, primary: registry.primary, claude: claude, prune: false) { say("  \(change)") }
         }
         account.email = try logIn(account, claude: claude).email
         if var registry = existing {
-            registry.accounts.append(account)
+            try registry.add(account)
             try store.save(registry)
         } else {
             try store.save(Registry(current: id, accounts: [account]))
@@ -373,19 +344,14 @@ func main() throws {
         guard code == 0 else { throw AccError.claudeFailed("`claude auth login` exited \(code)") }
         let status = try claude.authStatus(for: account)
         guard status.loggedIn else { throw AccError.claudeFailed("still not logged in") }
-        try store.update { r in
-            if let i = r.accounts.firstIndex(where: { $0.id == account.id }) { r.accounts[i].email = status.email }
-        }
+        try store.update { $0.recordEmail(status.email, for: account.id) }
         say("logged in \(account.id) as \(status.email ?? "unknown")")
 
     case "rename":
         guard args.count >= 2 else { throw AccError.usage("usage: acc rename <account> <label>") }
         let ref = args.removeFirst()
         let label = args.joined(separator: " ")
-        try store.update { r in
-            let id = try r.resolve(ref).id
-            r.accounts[r.accounts.firstIndex { $0.id == id }!].label = label
-        }
+        try store.update { r in try r.rename(r.resolve(ref).id, to: label) }
         say("renamed to \(label)")
 
     case "rm":
@@ -393,10 +359,7 @@ func main() throws {
         var removed: Account?
         try store.update { r in
             let account = try r.resolve(ref)
-            guard account.id != r.current else {
-                throw AccError.usage("'\(account.id)' is the current account; switch to another one first")
-            }
-            r.accounts.removeAll { $0.id == account.id }
+            try r.remove(account.id)
             removed = account
         }
         if let removed {

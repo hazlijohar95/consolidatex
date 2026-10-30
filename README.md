@@ -17,10 +17,24 @@ acc continue        out of quota? resume this folder's latest conversation on th
 acc ls              list with last-seen usage (● = current)
 acc doctor          check logins, shared config and MCP servers
 acc sync            share config and MCP servers from the primary account
+acc ui              open the Manage Accounts window
 acc add <id> --label <name>   new subscription: creates ~/.claude-<id>, shares config, logs in
 acc login <id>      log an account in again
 acc rename <id> <label> / acc rm <id>
 ```
+
+## Manage Accounts window
+
+Open it with `acc ui` or **Manage Accounts…** (⌘,) in the menu bar. In the window you can:
+
+- add a subscription. It suggests a short name, creates the config folder, shares config and opens the browser login.
+- rename an account by clicking its name.
+- drag rows to reorder them. The order sets the 1–9 shortcuts.
+- remove an account. The current and primary accounts can't be removed.
+- see each account's health dot (logged in, sharing config) and its 5h and 7d usage bars.
+- run **Check** or **Sync Config**.
+
+The window uses the same `AccCore` rules and the same validated store as the CLI, so a change made in either one shows up in the other straight away.
 
 ## Usage tracking
 

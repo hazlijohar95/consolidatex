@@ -10,5 +10,12 @@
 	<key>CFBundleVersion</key><string>__VERSION__</string>
 	<key>LSMinimumSystemVersion</key><string>13.0</string>
 	<key>LSUIElement</key><true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key><string>io.cynco.claude-accounts</string>
+			<key>CFBundleURLSchemes</key><array><string>claude-accounts</string></array>
+		</dict>
+	</array>
 </dict>
 </plist>
