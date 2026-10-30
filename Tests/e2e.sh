@@ -1,18 +1,18 @@
 #!/bin/zsh
-# Black-box test of the built `acc` binary and the zsh `claude` wrapper, using a
-# stub claude and a throwaway ACC_HOME. Never touches the real registry.
+# Black-box test of the built `acc` binary and the shell functions it generates, with stub
+# claude, codex and opencode binaries and a throwaway HOME. Never touches the real setup.
 emulate -L zsh
 root=${0:A:h:h}
 acc_bin=${ACC_BIN:-$root/.build/debug/acc}
 T=$(mktemp -d "${TMPDIR:-/tmp}/acc-e2e.XXXXXX") || exit 1
 T=${T:A}  # resolved, as getcwd reports it (/tmp is a symlink on macOS)
 trap 'rm -rf $T' EXIT
-
-mkdir -p $T/bin $T/home/.claude-cto $T/home/.claude-hello
+H=$T/home
+mkdir -p $T/bin $H
 ln -s $acc_bin $T/bin/acc
-# Stub claude. `auth status` reports logged in as <dirname>@test unless the dir has a
-# LOGGED_OUT marker; `mcp add-json/remove --scope user` edit the account's state file
-# the way Claude Code does; anything else echoes its account and arguments.
+
+# claude: `auth status` → logged in as <folder>@test unless the folder has LOGGED_OUT;
+# `mcp add-json/remove --scope user` edit the account's state file like Claude Code does.
 cat > $T/bin/claude <<'EOF'
 #!/bin/sh
 state="${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/.claude.json}"; state="${state:-$HOME/.claude.json}"
@@ -33,98 +33,133 @@ PY
 fi
 echo "CFG=${CLAUDE_CONFIG_DIR-<unset>} ARGS=$*"
 EOF
-chmod +x $T/bin/claude
-cat > $T/accounts.json <<EOF
-{"version":1,"current":"team","accounts":[
- {"id":"team","label":"Haz (team)","configDir":null,"email":"default@test"},
- {"id":"cto","label":"CTO","configDir":"$T/home/.claude-cto","email":".claude-cto@test"},
- {"id":"hello","label":"Hello","configDir":"$T/home/.claude-hello","email":"stale@test"}
-]}
+# codex: `login status` exits 0 unless the home has LOGGED_OUT.
+cat > $T/bin/codex <<'EOF'
+#!/bin/sh
+if [ "$1 $2" = "login status" ]; then [ -e "${CODEX_HOME:-$HOME/.codex}/LOGGED_OUT" ] && exit 1; exit 0; fi
+echo "CODEX=${CODEX_HOME-<unset>} ARGS=$*"
 EOF
+# opencode: `auth list --format json` reports one connected provider.
+cat > $T/bin/opencode <<'EOF'
+#!/bin/sh
+case "$*" in *"auth list --format json"*) echo '[{"id":"openai","name":"OpenAI","connections":[{"label":"OpenAI"}]}]'; exit 0;; esac
+echo "XDG=${XDG_DATA_HOME-<unset>} ARGS=$*"
+EOF
+chmod +x $T/bin/claude $T/bin/codex $T/bin/opencode
 
-export ACC_HOME=$T HOME=$T/home PATH=$T/bin:/usr/bin:/bin
-unset CLAUDE_CONFIG_DIR ACC_CLAUDE
+# Accounts that already exist before acc: a T3 Code setup, sibling folders, defaults.
+mkdir -p $H/.claude/skills $H/.claude-cto $H/.codex $H/.codex-side $H/.local/share/opencode $H/.t3/userdata
+print rules > $H/.claude/CLAUDE.md
+print '{"model": "opus"}' > $H/.claude/settings.json
+print '{"mcpServers":{"docs":{"type":"http","url":"https://d"}}}' > $H/.claude.json
+print '{"mcpServers":{"mine":{"type":"http","url":"https://m"}}}' > $H/.claude-cto/.claude.json
+print 'model = "gpt"' > $H/.codex/config.toml
+print '{}' > $H/.codex-side/auth.json
+print '{"providerInstances":{"a":{"driver":"claudeAgent","displayName":"Haz (team)","enabled":true}}}' > $H/.t3/userdata/settings.json
+
+export ACC_HOME=$T/acc HOME=$H SHELL=/bin/zsh PATH=$T/bin:/usr/bin:/bin
+unset CLAUDE_CONFIG_DIR CODEX_HOME XDG_DATA_HOME ACC_CLAUDE ACC_CODEX ACC_OPENCODE
 
 fail=0
 check() {
   if [[ $2 == $3 ]]; then print "ok   $1"; else print "FAIL $1\n  got:  [$2]\n  want: [$3]"; fail=1; fi
 }
-current() { acc current --json | sed -n 's/.*"id" : "\(.*\)".*/\1/p' }
+plain() { sed $'s/\e\\[[0-9;]*m//g' }
+current() { acc ls $1 | grep '^●' | awk '{print $4}' }
+col() { sed 's/^●/ /' | awk "{print $1}" }
+sh() { zsh -fc 'eval "$(acc shell-init zsh)"; '"$1" 2>&1 }
 
-acc cto >/dev/null;                     check 'switch by name'                 $(current) cto
-acc 3 >/dev/null;                       check 'switch by position'             $(current) hello
-acc use team >/dev/null;                check 'switch with use'                $(current) team
-check 'ambiguous is rejected'           "$(acc h 2>&1; echo "exit $?")"        $'acc: \'h\' matches team, hello; be more specific\nexit 1'
-check 'unknown is rejected'             "$(acc nope 2>&1; echo "exit $?")"     $'acc: no account matches \'nope\' (see: acc ls)\nexit 1'
-check 'failed switch keeps state'       $(current) team
-check 'unknown flag is a usage error'   "$(acc --bogus >/dev/null 2>&1; echo $?)" 2
-check 'dir of default is empty'         "$(acc dir)" ''
-check 'dir of named'                    "$(acc dir cto)" $T/home/.claude-cto
-check 'non-tty bare acc lists'          "$(acc </dev/null | grep '●')" '● 1  team   Haz (team)  default@test      no data yet'
-check 'run sets dir'                    "$(acc run cto -- -p hi)" "CFG=$T/home/.claude-cto ARGS=-p hi"
-check 'run default drops inherited dir' "$(CLAUDE_CONFIG_DIR=/x acc run team)" 'CFG=<unset> ARGS='
+# --- first run
+check 'nothing yet'                       "$(acc ls 2>&1)" 'acc: no accounts yet (run: acc setup)'
+acc setup --yes > $T/setup.txt
+check 'setup imports existing accounts'   "$(acc ls | col '$2, $3')" $'claude haz-team\nclaude cto\ncodex codex-default\ncodex side\nopencode opencode-default'
+check 'setup keeps T3 names'              "$(acc ls | grep haz-team | col '$4, $5')" 'Haz (team)'
+check 'setup records emails'              "$(acc ls | grep ' cto ' | col '$5')" '.claude-cto@test'
+check 'setup hooks the shell once'        "$(grep -c 'acc shell-init zsh' $H/.zshrc)" 1
+check 'setup turns on the status line'    "$(grep -c 'acc statusline' $H/.claude/settings.json)" 1
+check 'setup shares Claude config'        "$(cat $H/.claude-cto/CLAUDE.md)" rules
+check 'setup shares Codex config'         "$(cat $H/.codex-side/config.toml)" 'model = "gpt"'
+check 'setup mirrors MCP servers'         "$(grep -c '"docs"' $H/.claude-cto/.claude.json)" 1
+acc setup --yes > $T/setup2.txt
+check 'setup is idempotent'               "$(grep -c 'acc shell-init zsh' $H/.zshrc) $(acc ls | wc -l | tr -d ' ')" '1 5'
 
-check 'rm current is refused'           "$(acc rm team 2>&1; echo "exit $?")" $'acc: \'team\' is the current account; switch to another one first\nexit 2'
-acc rename hello Hello World >/dev/null
-check 'rename'                          "$(acc ls | grep hello)" '  3  hello  Hello World  stale@test        no data yet'
-
-check 'doctor flags stale email'        "$(acc doctor | grep hello)" '! hello  logged in as .claude-hello@test, registry says stale@test (run acc doctor --fix to record it)'
-acc doctor --fix >/dev/null
-check 'doctor --fix records email'      "$(acc ls | grep hello)" '  3  hello  Hello World  .claude-hello@test  no data yet'
-touch $T/home/.claude-cto/LOGGED_OUT
-check 'doctor fails on logged-out'      "$(acc doctor | grep cto; echo "exit ${pipestatus[1]}")" $'✗ cto    not logged in → acc login cto\nexit 1'
-rm $T/home/.claude-cto/LOGGED_OUT
-
-acc add ah --label 'A&H' --dir $T/home/.claude-ah >/dev/null
-check 'add creates dir'                 "$([[ -d $T/home/.claude-ah ]] && echo yes)" yes
-check 'add registers'                   "$(acc ls | grep ' ah ')" '  4  ah     A&H          .claude-ah@test     no data yet'
-check 'add duplicate is refused'        "$(acc add cto 2>&1)" "acc: an account with id 'cto' already exists"
-check 'add reserved id is refused'      "$(acc add ls 2>&1)" "acc: 'ls' is not a valid id: use lowercase letters, digits and '-', starting with a letter, and not an acc command"
-acc rm ah >/dev/null;                   check 'rm'                             "$(acc ls | grep -c ' ah ')" 0
-
-# statusline: records live usage for the session's account, renders, and nudges when nearly out
-in_status() { print -r -- "{\"model\":{\"display_name\":\"Opus\"},\"rate_limits\":{\"five_hour\":{\"used_percentage\":$1,\"resets_at\":$(( $(date +%s) + 7200 ))}}}" }
-check 'statusline records + nudges'     "$(in_status 95 | CLAUDE_CONFIG_DIR=$T/home/.claude-cto acc statusline | sed $'s/\e\\[[0-9;]*m//g')" '✳ CTO · 5h 95% · Opus  ⇢ acc continue team'
-check 'usage shows in ls'               "$(acc ls | grep ' cto ' | awk -F'  ' '{print $NF}')" '5h 95% · resets in 1h'
-in_status 20 | acc statusline >/dev/null
-check 'auto picks the roomiest'         "$(acc auto | head -1)" 'claude → team  Haz (team)  (default@test)'
-check 'statusline without usage'        "$(print '{}' | CLAUDE_CONFIG_DIR=$T/home/.claude-hello acc statusline | sed $'s/\e\\[[0-9;]*m//g')" '✳ Hello World'
-check 'statusline survives garbage'     "$(print 'nope' | acc statusline | sed $'s/\e\\[[0-9;]*m//g')" '✳ Haz (team) · 5h 20%'
-
-# continue: newest transcript for this folder moves to the target account and resumes there
-proj=$T/work; mkdir -p $proj; slug=${proj//[^A-Za-z0-9]/-}
-mkdir -p $T/home/.claude-cto/projects/$slug/s-old $T/home/.claude/projects/$slug
-print old > $T/home/.claude-cto/projects/$slug/s-old.jsonl; touch -t 202601010000 $T/home/.claude-cto/projects/$slug/s-old.jsonl
-print new > $T/home/.claude-cto/projects/$slug/s-new.jsonl
-check 'continue resumes newest on named' "$(cd $proj && acc continue hello 2>/dev/null)" "CFG=$T/home/.claude-hello ARGS=--resume s-new"
-check 'continue copied transcript'       "$(cat $T/home/.claude-hello/projects/$slug/s-new.jsonl)" new
-check 'continue explains itself'         "$(cd $proj && acc continue hello 2>$T/err >/dev/null; cut -c1-40 $T/err)" '↪ continuing s-new (last active 1m ago o'
-check 'continue picks roomiest by default' "$(cd $proj && acc continue --session s-old 2>/dev/null)" 'CFG=<unset> ARGS=--resume s-old'
-check 'continue copies sidecar folder'   "$([[ -d $T/home/.claude/projects/$slug/s-old ]] && echo yes)" yes
-check 'continue with nothing to resume'  "$(cd $T && acc continue 2>&1)" "acc: no Claude Code conversation found for $T"
-
-# sync: link shared config and mirror MCP servers from the primary (team)
-mkdir -p $T/home/.claude/skills; print rules > $T/home/.claude/CLAUDE.md
-print '{"mcpServers":{"docs":{"type":"http","url":"https://d"}}}' > $T/home/.claude.json
-print '{"mcpServers":{"mine":{"type":"http","url":"https://m"}}}' > $T/home/.claude-cto/.claude.json
-check 'doctor reports drift'            "$(acc doctor | grep '^! cto')" $'! cto    CLAUDE.md is not shared from team → acc sync\n! cto    skills is not shared from team → acc sync\n! cto    missing MCP servers docs → acc sync\n! cto    has MCP servers team lacks: mine (add them to team to share, or acc sync --prune)'
-check 'sync links and mirrors'          "$(acc sync | grep '^cto')" 'cto: linked CLAUDE.md, linked skills, MCP docs added'
-check 'sync shares the real file'       "$(cat $T/home/.claude-cto/CLAUDE.md)" rules
-check 'sync keeps extras by default'    "$(acc sync | grep 'cto.*mine' | cut -c1-30)" '! cto: has MCP servers team la'
-check 'sync --prune removes extras'     "$(acc sync --prune | grep '^cto')" 'cto: MCP mine removed'
-check 'sync is idempotent'              "$(acc sync)" 'everything already matches team'
-
-W() { zsh -fc "source $root/shell/acc.zsh; $1" 2>&1 }
+# --- switching and launching through the shell functions
+check 'claude starts on current (default)' "$(sh 'claude a b')" 'CFG=<unset> ARGS=a b'
 acc cto >/dev/null
-check 'wrapper follows current'         "$(W 'claude a b')" "CFG=$T/home/.claude-cto ARGS=a b"
-check 'wrapper @ one-off'               "$(W 'claude @hello x')" "CFG=$T/home/.claude-hello ARGS=x"
-check 'wrapper @ does not switch'       $(current) cto
-check 'wrapper @ unknown fails'         "$(W 'claude @zzz'; echo "exit $?")" $'acc: no account matches \'zzz\' (see: acc ls)\nexit 1'
-check 'wrapper respects pinned dir'     "$(W 'CLAUDE_CONFIG_DIR=/pinned claude')" 'CFG=/pinned ARGS='
-acc team >/dev/null
-check 'wrapper default account'         "$(W claude)" 'CFG=<unset> ARGS='
-print 'not json' > $T/accounts.json
-check 'broken registry still starts claude' "$(W 'claude z')" $'acc: cannot read '$T$'/accounts.json: not valid JSON\nacc: starting claude on its default account instead (run: acc doctor)\nCFG=<unset> ARGS=z'
-check 'broken registry error is specific'   "$(acc ls 2>&1)" "acc: cannot read $T/accounts.json: not valid JSON"
+check 'switch by name'                    "$(sh 'claude')" "CFG=$H/.claude-cto ARGS="
+check 'codex keeps its own current'       "$(sh 'codex exec hi')" 'CODEX=<unset> ARGS=exec hi'
+acc codex side >/dev/null
+check 'switch within a tool'              "$(sh 'codex')" "CODEX=$H/.codex-side ARGS="
+check 'switching codex left claude alone' "$(current claude)" cto
+acc 3 >/dev/null
+check 'switch by position'                "$(current codex)" codex-default
+check '@ one-off'                         "$(sh 'codex @side x')" "CODEX=$H/.codex-side ARGS=x"
+check '@ does not switch'                 "$(current codex)" codex-default
+check '@ resolves within the tool'        "$(sh 'claude @side' ; echo "exit $?")" $'acc: no account matches \'side\' (see: acc ls)\nexit 1'
+check 'explicit variable wins'            "$(sh 'CODEX_HOME=/pinned codex')" 'CODEX=/pinned ARGS='
+check 'ambiguous is rejected'             "$(acc default 2>&1; echo "exit $?")" $'acc: \'default\' matches haz-team, codex-default, opencode-default; be more specific\nexit 1'
+check 'unknown flag is a usage error'     "$(acc --bogus >/dev/null 2>&1; echo $?)" 2
+
+# --- adding: new folder, shared config, login skipped when already logged in
+acc add opencode Mine >/dev/null
+check 'add creates the folder'            "$([[ -d $H/.opencode-mine ]] && echo yes)" yes
+acc mine >/dev/null
+check 'opencode runs standalone on it'    "$(sh 'opencode run hi')" "XDG=$H/.opencode-mine ARGS=--standalone run hi"
+check 'opencode default stays plain'      "$(sh 'opencode @opencode-default run')" 'XDG=<unset> ARGS=run'
+acc add codex 'Client A' >/dev/null
+check 'add links shared codex config'     "$(readlink $H/.codex-client-a/config.toml)" "$H/.codex/config.toml"
+check 'add refuses a duplicate'           "$(acc add codex x --id side 2>&1)" "acc: an account with id 'side' already exists"
+check 'add refuses an unknown tool'       "$(acc add kiro 2>&1 | head -1)" 'acc: usage: acc add <claude|codex|opencode> [<name>] [--id <id>] [--dir <folder>]'
+
+# --- usage, status line, auto
+in_status() { print -r -- "{\"model\":{\"display_name\":\"Opus\"},\"rate_limits\":{\"five_hour\":{\"used_percentage\":$1,\"resets_at\":$(( $(date +%s) + 7200 ))}}}" }
+check 'status line records and nudges'    "$(in_status 95 | CLAUDE_CONFIG_DIR=$H/.claude-cto acc statusline | plain)" '✳ cto · 5h 95% · Opus  ⇢ acc continue haz-team'
+in_status 20 | acc statusline >/dev/null
+check 'usage shows in ls'                 "$(acc ls claude | grep ' cto ' | awk -F'  ' '{print $NF}')" '5h 95% · resets in 1h'
+mkdir -p $H/.codex/sessions/2026/10/30
+print -r -- '{"timestamp":"2026-10-30T10:00:00.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":40,"window_minutes":300,"resets_at":'$(( $(date +%s) + 3600 ))'},"secondary":null}}}' \
+  > $H/.codex/sessions/2026/10/30/rollout-2026-10-30T10-00-00-0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b.jsonl
+check 'codex usage read from its sessions' "$(acc ls codex | grep codex-default | awk -F'  ' '{print $NF}')" '5h 40%'
+check 'auto picks the roomiest'           "$(acc auto claude | head -1)" 'claude → Claude Code: haz-team  Haz (team)  (default@test)'
+
+# --- continue: newest conversation for this folder moves to the target and resumes there
+proj=$T/work; mkdir -p $proj; slug=${proj//[^A-Za-z0-9]/-}
+mkdir -p $H/.claude-cto/projects/$slug/s-old
+print old > $H/.claude-cto/projects/$slug/s-old.jsonl; touch -t 202601010000 $H/.claude-cto/projects/$slug/s-old.jsonl
+print new > $H/.claude-cto/projects/$slug/s-new.jsonl
+check 'continue resumes newest on named'  "$(cd $proj && acc continue haz-team 2>/dev/null)" 'CFG=<unset> ARGS=--resume s-new'
+check 'continue copied the transcript'    "$(cat $H/.claude/projects/$slug/s-new.jsonl)" new
+check 'continue explains itself'          "$(cd $proj && acc continue haz-team 2>&1 >/dev/null)" 'acc: ↪ continuing s-new (last active 1m ago on haz-team) on haz-team'
+check 'continue copies the sidecar folder' "$(cd $proj && acc continue haz-team --session s-old >/dev/null 2>&1; [[ -d $H/.claude/projects/$slug/s-old ]] && echo yes)" yes
+cuid=0199a1b2-aaaa-7e5f-8a9b-0c1d2e3f4a5b
+print -r -- '{"type":"session_meta","payload":{"id":"'$cuid'","cwd":"'$proj'"}}' > $H/.codex/sessions/2026/10/30/rollout-2026-10-30T11-00-00-$cuid.jsonl
+check 'continue works for codex'          "$(cd $proj && acc continue side 2>/dev/null)" "CODEX=$H/.codex-side ARGS=resume $cuid"
+check 'codex rollout landed in side'      "$([[ -f $H/.codex-side/sessions/2026/10/30/rollout-2026-10-30T11-00-00-$cuid.jsonl ]] && echo yes)" yes
+check 'continue refuses opencode'         "$(cd $proj && acc continue mine 2>&1)" 'acc: opencode conversations cannot move between accounts'
+check 'continue with nothing to resume'   "$(cd $T && acc continue 2>&1)" "acc: no Claude Code or Codex conversation found for $T"
+
+# --- doctor, sync, rename, rm
+check 'doctor only flags the extra MCP'   "$(acc doctor | grep '^[✗!]')" '! cto               has MCP servers haz-team lacks: mine (add them to haz-team to share, or acc sync --prune)'
+touch $H/.claude-cto/LOGGED_OUT
+check 'doctor flags a logged-out account' "$(acc doctor | grep '^✗'; echo "exit ${pipestatus[1]}")" $'✗ cto               not logged in → acc login cto\nexit 1'
+rm $H/.claude-cto/LOGGED_OUT
+check 'sync keeps extra MCP servers'      "$(acc sync | grep mine | cut -c1-34)" '! cto: has MCP servers haz-team la'
+check 'sync --prune removes them'         "$(acc sync --prune | grep '^cto')" 'cto: MCP mine removed'
+check 'sync is idempotent'                "$(acc sync)" 'everything already shares its primary'"'"'s config'
+acc rename side Side Gig >/dev/null
+acc cto >/dev/null; acc side >/dev/null
+check 'rename'                            "$(acc ls codex | grep ' side ' | awk -F'  +' '{print $4}')" 'Side Gig'
+check 'rm refuses a current account'      "$(acc rm cto 2>&1; echo "exit $?")" $'acc: \'cto\' is the current Claude Code account; switch to another one first\nexit 2'
+check 'rm refuses a primary with others'  "$(acc rm codex-default 2>&1)" "acc: 'codex-default' is the primary Codex account; the others share its config, so remove them first"
+acc rm client-a >/dev/null
+check 'rm keeps the folder'               "$([[ -d $H/.codex-client-a ]] && echo yes) $(acc ls | grep -c client-a)" 'yes 0'
+
+# --- resilience
+print 'not json' > $ACC_HOME/accounts.json
+check 'broken registry still starts tools' "$(sh 'codex z')" $'acc: cannot read '$ACC_HOME$'/accounts.json: not valid JSON\nacc: starting codex on its default account instead (run: acc doctor)\nCODEX=<unset> ARGS=z'
+check 'broken registry error is specific' "$(acc ls 2>&1)" "acc: cannot read $ACC_HOME/accounts.json: not valid JSON"
+rm $ACC_HOME/accounts.json
+check 'no registry: tools run untouched'  "$(sh 'claude q')" 'CFG=<unset> ARGS=q'
+check 'fish functions are generated'      "$(acc shell-init fish | grep -c 'command acc launch')" 3
 
 exit $fail

@@ -1,11 +1,9 @@
 import Foundation
 
-/// Config every account shares with the primary account: files and folders are
-/// symlinked into each account's config dir, and user-scope MCP servers (which
-/// live in each account's own state file) are mirrored from the primary.
+/// Config every account of a tool shares with that tool's primary account: the tool's shared
+/// items are symlinked into each account's folder, and for Claude Code, user-scope MCP servers
+/// (stored in each account's own state file) are mirrored from the primary.
 public enum Shared {
-    public static let items = ["CLAUDE.md", "settings.json", "skills", "agents", "commands", "plugins", "hooks"]
-
     public enum Link: Equatable, Sendable {
         case linked
         case missing
@@ -15,11 +13,10 @@ public enum Shared {
     }
 
     public static func links(for account: Account, primary: Account, home: String = userHome()) -> [(item: String, state: Link)] {
-        let source = AccountPaths(primary, home: home).configDir
-        let target = AccountPaths(account, home: home).configDir
+        let source = primary.folder(home: home), target = account.folder(home: home)
         guard source != target else { return [] }
         let fm = FileManager.default
-        return items.compactMap { item in
+        return account.tool.spec.sharedItems.compactMap { item in
             guard fm.fileExists(atPath: source + "/" + item) else { return nil }
             let path = target + "/" + item
             if let dest = try? fm.destinationOfSymbolicLink(atPath: path) {
@@ -32,8 +29,7 @@ public enum Shared {
     /// Creates missing links. Returns the items it linked.
     @discardableResult
     public static func link(_ account: Account, primary: Account, home: String = userHome()) throws -> [String] {
-        let source = AccountPaths(primary, home: home).configDir
-        let target = AccountPaths(account, home: home).configDir
+        let source = primary.folder(home: home), target = account.folder(home: home)
         try FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: true)
         return try links(for: account, primary: primary, home: home).filter { $0.state == .missing }.map { item, _ in
             try FileManager.default.createSymbolicLink(atPath: target + "/" + item, withDestinationPath: source + "/" + item)
@@ -41,30 +37,95 @@ public enum Shared {
         }
     }
 
-    /// User-scope MCP server definitions, by name, as stored in the account's state file.
-    public static func mcpServers(_ account: Account, home: String = userHome()) -> [String: NSDictionary] {
-        let path = AccountPaths(account, home: home).stateFile
-        guard let data = FileManager.default.contents(atPath: path),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let servers = root["mcpServers"] as? [String: Any]
-        else { return [:] }
-        return servers.compactMapValues { $0 as? NSDictionary }
-    }
-
     public struct MCPDrift: Equatable, Sendable {
         public var missing: [String] = []
         public var extra: [String] = []
         public var different: [String] = []
-        public var isEmpty: Bool { missing.isEmpty && extra.isEmpty && different.isEmpty }
     }
 
     public static func mcpDrift(_ account: Account, primary: Account, home: String = userHome()) -> MCPDrift {
-        let want = mcpServers(primary, home: home)
-        let have = mcpServers(account, home: home)
+        guard account.tool == .claude else { return MCPDrift() }
+        let want = ClaudeSupport.mcpServers(primary, home: home)
+        let have = ClaudeSupport.mcpServers(account, home: home)
         var drift = MCPDrift()
         drift.missing = want.keys.filter { have[$0] == nil }.sorted()
         drift.extra = have.keys.filter { want[$0] == nil }.sorted()
         drift.different = want.keys.filter { name in have[name].map { !$0.isEqual(want[name]!) } ?? false }.sorted()
         return drift
+    }
+
+    /// What differs between an account and its tool's primary, in words.
+    public static func issues(_ account: Account, primary: Account, home: String = userHome()) -> [String] {
+        var issues: [String] = []
+        for (item, state) in links(for: account, primary: primary, home: home) {
+            switch state {
+            case .linked: break
+            case .missing: issues.append("\(item) is not shared from \(primary.id) → acc sync")
+            case .local: issues.append("keeps its own \(item) instead of \(primary.id)'s (move it aside, then acc sync)")
+            case .elsewhere(let dest): issues.append("\(item) links to \(dest), not \(primary.id)'s")
+            }
+        }
+        let drift = mcpDrift(account, primary: primary, home: home)
+        if !drift.missing.isEmpty { issues.append("missing MCP servers \(drift.missing.joined(separator: ", ")) → acc sync") }
+        if !drift.different.isEmpty { issues.append("MCP servers differ from \(primary.id): \(drift.different.joined(separator: ", ")) → acc sync") }
+        if !drift.extra.isEmpty {
+            issues.append("has MCP servers \(primary.id) lacks: \(drift.extra.joined(separator: ", ")) (add them to \(primary.id) to share, or acc sync --prune)")
+        }
+        return issues
+    }
+
+    /// Makes one account match its primary. Returns what it changed.
+    public static func sync(_ account: Account, primary: Account, runner: Runner?, prune: Bool, home: String = userHome()) throws -> [String] {
+        var changes = try link(account, primary: primary, home: home).map { "linked \($0)" }
+        let drift = mcpDrift(account, primary: primary, home: home)
+        guard account.tool == .claude, let runner, !(drift.missing + drift.different + (prune ? drift.extra : [])).isEmpty else { return changes }
+        let wanted = ClaudeSupport.mcpServers(primary, home: home)
+        for name in drift.missing + drift.different {
+            try ClaudeSupport.addMCPServer(runner, name, definition: wanted[name]!, to: account)
+            changes.append("MCP \(name) " + (drift.missing.contains(name) ? "added" : "updated"))
+        }
+        if prune {
+            for name in drift.extra {
+                try ClaudeSupport.removeMCPServer(runner, name, from: account)
+                changes.append("MCP \(name) removed")
+            }
+        }
+        return changes
+    }
+}
+
+/// How one account stands: logged in, and sharing its tool's primary config.
+public struct AccountHealth: Equatable, Sendable {
+    public var loggedIn: Bool?
+    public var email: String?
+    public var detail: String?
+    public var problems: [String]
+    public var issues: [String]
+
+    public var isHealthy: Bool { loggedIn == true && problems.isEmpty }
+
+    public static func check(_ account: Account, in registry: Registry, runner: Runner?) -> AccountHealth {
+        var health = AccountHealth(loggedIn: nil, email: nil, detail: nil, problems: [], issues: [])
+        if let dir = account.resolvedConfigDir(), !FileManager.default.fileExists(atPath: dir) {
+            health.problems.append("folder \(dir) does not exist")
+            return health
+        }
+        if let runner {
+            do {
+                let status = try runner.authStatus(for: account)
+                health.loggedIn = status.loggedIn
+                health.email = status.email
+                health.detail = status.detail
+                if !status.loggedIn { health.problems.append("not logged in → acc login \(account.id)") }
+            } catch {
+                health.problems.append(String(describing: error))
+            }
+        } else {
+            health.problems.append("\(account.tool.spec.command) is not installed")
+        }
+        if let primary = registry.primary(for: account.tool), primary.id != account.id {
+            health.issues = Shared.issues(account, primary: primary)
+        }
+        return health
     }
 }

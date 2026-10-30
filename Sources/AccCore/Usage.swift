@@ -1,43 +1,44 @@
 import Foundation
 
-/// Subscription usage as Claude Code reports it to the status line
-/// (`rate_limits.five_hour` / `seven_day`), recorded per account.
+/// How much of an account's subscription limits are used, as the tool itself reported it.
 public struct Usage: Codable, Equatable, Sendable {
     public struct Window: Codable, Equatable, Sendable {
+        /// "5h", "7d", "30d".
+        public let label: String
         public let usedPercentage: Double
         public let resetsAt: Date
 
-        public init(usedPercentage: Double, resetsAt: Date) {
+        public init(label: String, usedPercentage: Double, resetsAt: Date) {
+            self.label = label
             self.usedPercentage = usedPercentage
             self.resetsAt = resetsAt
         }
 
         /// A window whose reset time has passed has started over.
         public func used(at now: Date) -> Double { now >= resetsAt ? 0 : usedPercentage }
+
+        public static func label(minutes: Int) -> String {
+            minutes % 1440 == 0 ? "\(minutes / 1440)d" : minutes % 60 == 0 ? "\(minutes / 60)h" : "\(minutes)m"
+        }
     }
 
-    public let fiveHour: Window?
-    public let sevenDay: Window?
+    public let windows: [Window]
     public let recordedAt: Date
 
-    public init(fiveHour: Window?, sevenDay: Window?, recordedAt: Date) {
-        self.fiveHour = fiveHour
-        self.sevenDay = sevenDay
+    public init(windows: [Window], recordedAt: Date) {
+        self.windows = windows
         self.recordedAt = recordedAt
     }
 
-    /// The tighter of the two windows: what decides whether the account can take more work.
-    public func load(at now: Date) -> Double {
-        max(fiveHour?.used(at: now) ?? 0, sevenDay?.used(at: now) ?? 0)
-    }
+    /// The fullest window: what decides whether the account can take more work.
+    public func load(at now: Date) -> Double { windows.map { $0.used(at: now) }.max() ?? 0 }
 
-    /// The window that is limiting right now, for "resets in" hints.
     public func limitingWindow(at now: Date) -> Window? {
-        [fiveHour, sevenDay].compactMap { $0 }.filter { $0.used(at: now) > 0 }.max { $0.usedPercentage < $1.usedPercentage }
+        windows.filter { $0.used(at: now) > 0 }.max { $0.usedPercentage < $1.usedPercentage }
     }
 }
 
-/// Last-known usage per account, one small JSON file each under <acc home>/usage.
+/// Usage acc recorded itself (Claude Code's status line feeds it), one JSON file per account.
 public struct UsageStore: Sendable {
     public let directory: URL
 
@@ -48,10 +49,6 @@ public struct UsageStore: Sendable {
     public func load(_ id: String) -> Usage? {
         guard let data = try? Data(contentsOf: file(id)) else { return nil }
         return try? Self.decoder.decode(Usage.self, from: data)
-    }
-
-    public func all(_ registry: Registry) -> [String: Usage] {
-        Dictionary(uniqueKeysWithValues: registry.accounts.compactMap { a in load(a.id).map { (a.id, $0) } })
     }
 
     public func record(_ usage: Usage, for id: String) throws {
@@ -80,24 +77,47 @@ public struct UsageStore: Sendable {
     }()
 }
 
+/// Last-known usage for any account, from wherever its tool keeps it.
+public struct Usages: Sendable {
+    public let store: UsageStore
+
+    public init(store: UsageStore) { self.store = store }
+
+    public func usage(for account: Account) -> Usage? {
+        switch account.tool {
+        case .claude: store.load(account.id)
+        case .codex: CodexSupport.latestUsage(home: account.folder())
+        case .opencode: nil
+        }
+    }
+
+    public func all(_ registry: Registry) -> [String: Usage] {
+        Dictionary(uniqueKeysWithValues: registry.accounts.compactMap { a in usage(for: a).map { (a.id, $0) } })
+    }
+}
+
 extension Registry {
-    /// Accounts ordered by headroom, most first. Accounts with no recorded usage
-    /// rank as half used: better than a busy account, worse than a known-quiet one.
-    public func byHeadroom(_ usage: [String: Usage], at now: Date = Date(), excluding: Set<String> = []) -> [Account] {
+    /// Accounts of `tool` ordered by headroom, most first. Accounts with no known usage rank
+    /// as half used: better than a busy account, worse than a known-quiet one.
+    public func byHeadroom(_ tool: Tool, _ usage: [String: Usage], at now: Date = Date(), excluding: Set<String> = []) -> [Account] {
         let load = { (a: Account) in usage[a.id]?.load(at: now) ?? 50 }
-        return accounts.filter { !excluding.contains($0.id) }.enumerated()
+        return ordered.filter { $0.tool == tool && !excluding.contains($0.id) }.enumerated()
             .sorted { l, r in load(l.element) != load(r.element) ? load(l.element) < load(r.element) : l.offset < r.offset }
             .map(\.element)
+    }
+
+    /// The roomiest account of `tool` other than `excluded`, if any is known to have room.
+    public func roomiest(_ tool: Tool, _ usage: [String: Usage], excluding excluded: String? = nil, at now: Date = Date()) -> Account? {
+        byHeadroom(tool, usage, at: now, excluding: Set([excluded].compactMap { $0 }))
+            .first { (usage[$0.id]?.load(at: now) ?? 0) < 90 }
     }
 }
 
 public enum UsageFormat {
-    /// "5h 82% · 7d 40%", or "no data" when nothing has been recorded.
-    public static func summary(_ usage: Usage?, at now: Date = Date()) -> String {
-        guard let usage else { return "no data yet" }
-        var parts: [String] = []
-        if let w = usage.fiveHour { parts.append("5h \(Int(w.used(at: now).rounded()))%") }
-        if let w = usage.sevenDay { parts.append("7d \(Int(w.used(at: now).rounded()))%") }
+    /// "5h 82% · 7d 40% · resets in 3h", or a short note when nothing is known.
+    public static func summary(_ usage: Usage?, tool: Tool? = nil, at now: Date = Date()) -> String {
+        guard let usage else { return tool == .opencode ? "no usage data" : "no data yet" }
+        var parts = usage.windows.map { "\($0.label) \(Int($0.used(at: now).rounded()))%" }
         if let w = usage.limitingWindow(at: now), w.usedPercentage >= 80 {
             parts.append("resets \(relative(w.resetsAt, from: now))")
         }

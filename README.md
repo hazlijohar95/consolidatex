@@ -1,86 +1,95 @@
-# acc
+# Consolidatex
 
-Pick which Claude Code subscription new `claude` sessions use, from the terminal or the menu bar.
+Run several subscriptions of **Claude Code**, **Codex** and **opencode** side by side on one Mac, and switch between them from the terminal or the menu bar.
 
-Each subscription is a Claude Code config directory (`CLAUDE_CONFIG_DIR`). `acc` keeps a registry of them and which one is current. The zsh `claude` wrapper reads it every time it starts a session, so switching takes effect in every terminal at once. Running sessions keep their account.
+```
+$ acc
+● 1  claude    work      Work             me@company.com      5h 82% · 7d 40% · resets in 1h
+  2  claude    personal  Personal         me@gmail.com        5h 3% · 7d 12%
+● 3  codex     plus      ChatGPT Plus     me@gmail.com        5h 40%
+● 4  opencode  default   opencode         OpenAI              no usage data
+```
+
+- **Pick once, applies everywhere.** `acc personal` changes which account every new `claude` in every terminal starts on. Sessions that are already running keep their account.
+- **Run two at once.** `claude @work` starts one session on another account without switching.
+- **Out of quota mid-task?** `acc continue` resumes the conversation in this folder on the account with the most room left (Claude Code and Codex).
+- **See usage at a glance.** Each Claude Code session's status line shows its account, its 5-hour and weekly usage, and which account to move to. The menu bar and `acc ls` show usage for every account.
+- **One config.** Your rules, settings, skills, plugins and MCP servers are shared across all accounts of a tool, so a new account behaves like your existing ones.
+
+## Install
+
+```
+brew install --cask hazlijohar95/tap/consolidatex
+acc setup
+```
+
+`acc setup` does the following, asking before each change:
+
+1. Finds the accounts you already have: `~/.claude`, `~/.claude-*` (including names from T3 Code), `~/.codex`, `~/.codex-*` and opencode.
+2. Hooks up your shell (zsh, bash or fish), so `claude`, `codex` and `opencode` start on the account you picked.
+3. Turns on the Claude Code status line.
+4. Shares config across accounts.
+
+Run it again at any time. It only adds what's missing.
+
+**From source** (needs Xcode or the Command Line Tools):
+
+```
+git clone https://github.com/hazlijohar95/consolidatex && cd consolidatex
+script/install && acc setup
+```
 
 ## Use
 
-```
-acc                 pick (fzf; press 1-9)
-acc cto             switch
-acc auto            switch to the account with the most quota left
-claude              start on the current account
-claude @qeel        one session on another account, no switch
-acc continue        out of quota? resume this folder's latest conversation on the
-                    roomiest other account (or `acc continue hello`)
-acc ls              list with last-seen usage (● = current)
-acc doctor          check logins, shared config and MCP servers
-acc sync            share config and MCP servers from the primary account
-acc ui              open the Manage Accounts window
-acc add <id> --label <name>   new subscription: creates ~/.claude-<id>, shares config, logs in
-acc login <id>      log an account in again
-acc rename <id> <label> / acc rm <id>
-```
-
-## Manage Accounts window
-
-Open it with `acc ui` or **Manage Accounts…** (⌘,) in the menu bar. In the window you can:
-
-- add a subscription. It suggests a short name, creates the config folder, shares config and opens the browser login.
-- rename an account by clicking its name.
-- drag rows to reorder them. The order sets the 1–9 shortcuts.
-- remove an account. The current and primary accounts can't be removed.
-- see each account's health dot (logged in, sharing config) and its 5h and 7d usage bars.
-- run **Check** or **Sync Config**.
-
-The window uses the same `AccCore` rules and the same validated store as the CLI, so a change made in either one shows up in the other straight away.
-
-## Usage tracking
-
-Set the status line in the shared `settings.json`:
-
-```json
-"statusLine": { "type": "command", "command": "/Users/<you>/.local/bin/acc statusline" }
-```
-
-Each session's status line shows its account, its 5-hour and 7-day usage, the model and how full the context is. Once the account passes 90%, it suggests `acc continue <roomiest>`. Each time it renders, it records that account's usage, which is the `rate_limits` data Claude Code already passes to status lines, in `~/.config/acc/usage/<id>.json`. `acc ls`, `acc auto`, `acc continue` and the menu bar all read those files. acc never handles tokens or calls an API. The cost is that an account shows `no data yet` until a session on it has rendered a status line.
-
-## Shared config
-
-The primary account (the one with `configDir: null`) owns `CLAUDE.md`, `settings.json`, `skills`, `agents`, `commands`, `plugins` and `hooks`. Every other account symlinks them. User-scope MCP servers are stored in each account's own `.claude.json`, so `acc sync` copies them from the primary using `claude mcp add-json`. A server that exists only on another account is reported and kept. `--prune` removes it. Add new MCP servers to the primary, then run `acc sync`. OAuth MCP servers still need logging in once per account.
+| | |
+|---|---|
+| `acc` | pick an account (fzf; press 1–9 to jump) |
+| `acc work` / `acc codex plus` | switch, across all tools or within one |
+| `claude @work …` | one session on another account |
+| `acc auto` | switch each tool to its account with the most room |
+| `acc continue [account]` | move this folder's latest conversation to another account and resume it |
+| `acc add codex "Client A"` | add a subscription: new folder, shared config, browser login |
+| `acc ls`, `acc doctor`, `acc sync` | list, check, re-share config |
+| `acc ui` | open the window: add, rename, reorder, log in, usage bars |
 
 `acc help` has the full list.
 
-## Install and update
+## How it works
+
+Each account is a separate folder. acc points the tool at that folder through the tool's own setting:
+
+| Tool | Account folder | Selected with | Usage from |
+|---|---|---|---|
+| Claude Code | `~/.claude-<id>` | `CLAUDE_CONFIG_DIR` | the status line (`rate_limits`) |
+| Codex | `~/.codex-<id>` | `CODEX_HOME` | `token_count` events in Codex's session files |
+| opencode | `~/.opencode-<id>` | `XDG_DATA_HOME`, plus `--standalone` for a private server | not available |
+
+The account on a tool's normal folder (`~/.claude`, `~/.codex`) runs with nothing changed.
+
+Each tool logs itself in and keeps its own credentials, and acc never copies or sends them. The one thing acc reads is the email and plan claims in Codex's `auth.json` ID token, which it uses to label the account. Usage comes only from what the tools already write locally, so acc itself makes no network calls.
+
+The shell hook defines `claude`, `codex` and `opencode` as functions that call `acc launch <tool>`. That command picks the tool's current account and replaces itself with the real binary. If acc's registry is missing or broken, the tool still starts on its default account and prints a warning.
+
+All state is in `~/.config/acc/accounts.json`. The CLI and the app validate every change before writing and replace the file atomically, so it is safe to edit by hand, and `acc doctor` tells you if an edit broke anything.
+
+**Not supported yet:** Kiro CLI keeps its login in a single database that no setting can move, so running Kiro accounts side by side isn't possible without changing `HOME`, which affects every other tool.
+
+## Develop
 
 ```
-./script/install            # builds and installs acc, the zsh wrapper and Consolidatex.app
-echo 'source ~/.config/acc/acc.zsh' >> ~/.zshrc   # once
+script/test       # unit tests, then end-to-end tests against stub tools in a throwaway HOME
+script/install    # build and install the app and CLI from source
 ```
 
-To update, run `git pull && ./script/install`. To test, run `./script/test`, which runs the unit tests and then black-box tests of the CLI and wrapper against a stub `claude`.
+`Sources/AccCore` holds the model. It defines the tool table (`Tool.swift`), the registry and its editing rules, and the per-tool support files. The CLI (`Sources/acc`) and the menu bar app (`Sources/Consolidatex`) are both thin layers over it.
 
-## Layout
+To add a tool, add a `ToolSpec` and a `<Tool>Support` file, then extend the switches the compiler points you to.
 
-- `Sources/AccCore`: the model. It holds `Registry` (validation and resolving what you type to an account), `RegistryStore` (load, validate, atomic save) and `Claude` (`auth status`, exec). The CLI and the app share it, so there is one parser and one set of rules.
-- `Sources/acc`: the CLI.
-- `Sources/Consolidatex`: the menu bar app. It watches the registry directory and shows a ⚠︎ with the reason if the registry is invalid.
-- `shell/acc.zsh`: the `claude` wrapper. An explicit `CLAUDE_CONFIG_DIR` always wins. If `acc` is missing or the registry is broken, `claude` still starts on the default account and prints a warning.
+Releases are built by `.github/workflows/release.yml` whenever a `v*` tag is pushed:
 
-## Registry
+- **Signing and notarizing** turns on once the `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` secrets exist.
+- **Updating the Homebrew tap** turns on once the `HOMEBREW_TAP_TOKEN` secret exists.
 
-`~/.config/acc/accounts.json` (or `$ACC_HOME/accounts.json`):
+## License
 
-```json
-{
-  "version": 1,
-  "current": "cto",
-  "accounts": [
-    { "id": "team", "label": "Haz (team)", "configDir": null, "email": "…" },
-    { "id": "cto",  "label": "CTO", "configDir": "~/.claude-acc4", "email": "…" }
-  ]
-}
-```
-
-`configDir: null` is Claude Code's default `~/.claude`. That account runs with `CLAUDE_CONFIG_DIR` unset, because setting it to `~/.claude` selects a different config file and keychain entry. At most one account can use it. Every write is validated first. An invalid change is refused and the file stays as it was. You can edit the file by hand, and `acc doctor` tells you if the edit broke anything.
+MIT

@@ -9,25 +9,33 @@ struct AccountsView: View {
     var body: some View {
         VStack(spacing: 0) {
             switch model.state {
+            case .loaded(let registry) where registry.accounts.isEmpty:
+                EmptyState(installed: model.installedTools) { adding = true }
+                footer(registry)
             case .loaded(let registry):
                 List(selection: $selection) {
-                    ForEach(Array(registry.accounts.enumerated()), id: \.element.id) { index, account in
-                        AccountRow(model: model, account: account, position: index + 1,
-                                   isCurrent: registry.current == account.id,
-                                   isPrimary: registry.primary.id == account.id)
-                            .tag(account.id)
+                    ForEach(registry.tools, id: \.self) { tool in
+                        Section(tool.spec.name) {
+                            ForEach(registry.accounts(for: tool)) { account in
+                                AccountRow(model: model, account: account,
+                                           position: registry.ordered.firstIndex(of: account)! + 1,
+                                           isCurrent: registry.isCurrent(account),
+                                           isPrimary: registry.primary(for: tool)?.id == account.id)
+                                    .tag(account.id)
+                            }
+                            .onMove { model.move(tool, from: $0, to: $1) }
+                        }
                     }
-                    .onMove { model.move(from: $0, to: $1) }
                 }
                 .listStyle(.inset(alternatesRowBackgrounds: true))
                 footer(registry)
             case .failed(let message):
-                ContentUnavailable(message: message) { model.revealRegistry() }
+                RegistryProblem(message: message) { model.revealRegistry() }
             }
         }
-        .frame(minWidth: 680, minHeight: 380)
+        .frame(minWidth: 700, minHeight: 400)
         .sheet(isPresented: $adding) { AddAccountSheet(model: model) }
-        .alert("Config synced", isPresented: Binding(get: { model.syncReport != nil }, set: { if !$0 { model.dismissSyncReport() } })) {
+        .alert("Config shared", isPresented: Binding(get: { model.syncReport != nil }, set: { if !$0 { model.dismissSyncReport() } })) {
             Button("OK") { model.dismissSyncReport() }
         } message: {
             Text(model.syncReport ?? "")
@@ -38,17 +46,21 @@ struct AccountsView: View {
     @ViewBuilder
     private func footer(_ registry: Registry) -> some View {
         let selected = selection.flatMap(registry.account(id:))
-        let removable = selected.map { $0.id != registry.current && $0.id != registry.primary.id } ?? false
+        let removable = selected.map { a in
+            let others = registry.accounts(for: a.tool).count > 1
+            return !others || (!registry.isCurrent(a) && registry.primary(for: a.tool)?.id != a.id)
+        } ?? false
         Divider()
         HStack(spacing: 8) {
             Button { adding = true } label: { Image(systemName: "plus") }
                 .help("Add a subscription")
+                .disabled(model.installedTools.isEmpty)
             Button {
                 if let selected { model.remove(selected) }
             } label: { Image(systemName: "minus") }
                 .disabled(!removable)
-                .help(removable ? "Remove from acc (its config folder is kept)"
-                                : "The current and primary accounts cannot be removed")
+                .help(removable ? "Remove from Consolidatex (its folder is kept)"
+                                : "A tool's current and primary accounts can't be removed while it has others")
             if let error = model.lastError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
@@ -58,10 +70,10 @@ struct AccountsView: View {
             Spacer()
             if model.checking { ProgressView().controlSize(.small) }
             Button("Check") { model.checkHealth() }
-                .disabled(model.checking)
+                .disabled(model.checking || registry.accounts.isEmpty)
             Button("Sync Config") { model.syncConfig() }
-                .disabled(model.checking)
-                .help("Share \(registry.primary.label)'s CLAUDE.md, settings, skills, plugins and MCP servers with every account")
+                .disabled(model.checking || registry.accounts.isEmpty)
+                .help("Share each tool's rules, settings, skills, plugins and MCP servers from its primary account")
         }
         .buttonStyle(.bordered)
         .padding(10)
@@ -95,9 +107,9 @@ struct AccountRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 16)
-            UsageBars(usage: model.usage[account.id])
+            UsageBars(usage: model.usage[account.id], tool: account.tool)
             trailing(health)
-                .frame(width: 118, alignment: .trailing)
+                .frame(width: 128, alignment: .trailing)
         }
         .padding(.vertical, 4)
         .onAppear { label = account.label }
@@ -109,7 +121,7 @@ struct AccountRow: View {
     }
 
     private func subtitle(_ health: AccountHealth?) -> String {
-        var parts = [account.id, account.email ?? "email unknown"]
+        var parts = [account.id, account.email ?? health?.detail ?? "not checked yet"]
         if isPrimary { parts.append("primary") }
         return parts.joined(separator: " · ")
     }
@@ -122,6 +134,9 @@ struct AccountRow: View {
                 ProgressView().controlSize(.small)
                 Text("Finish in browser").font(.caption).foregroundStyle(.secondary)
             }
+        case .inTerminal:
+            Button("Done? Check") { model.checkHealth() }
+                .help("Finish logging in in the Terminal window, then check")
         case .failed(let message):
             Button("Retry Login") { model.logIn(account) }
                 .help(message)
@@ -169,31 +184,28 @@ struct StatusDot: View {
 
 struct UsageBars: View {
     let usage: Usage?
+    let tool: Tool
 
     var body: some View {
         let now = Date()
         VStack(alignment: .trailing, spacing: 3) {
-            if let usage {
-                bar("5h", usage.fiveHour, now)
-                bar("7d", usage.sevenDay, now)
+            if let usage, !usage.windows.isEmpty {
+                ForEach(usage.windows, id: \.label) { window in bar(window, now) }
             } else {
-                Text("no usage yet").font(.caption).foregroundStyle(.tertiary)
+                Text(tool == .opencode ? "no usage data" : "no usage yet").font(.caption).foregroundStyle(.tertiary)
             }
         }
-        .frame(width: 130)
-        .help(UsageFormat.summary(usage))
+        .frame(width: 134)
+        .help(UsageFormat.summary(usage, tool: tool))
     }
 
-    @ViewBuilder
-    private func bar(_ name: String, _ window: Usage.Window?, _ now: Date) -> some View {
-        if let window {
-            let used = window.used(at: now)
-            HStack(spacing: 6) {
-                Text(name).font(.caption2).foregroundStyle(.secondary).frame(width: 16, alignment: .leading)
-                ProgressView(value: min(used, 100), total: 100)
-                    .tint(used >= 90 ? .red : used >= 70 ? .orange : .green)
-                Text("\(Int(used.rounded()))%").font(.caption2).monospacedDigit().frame(width: 30, alignment: .trailing)
-            }
+    private func bar(_ window: Usage.Window, _ now: Date) -> some View {
+        let used = window.used(at: now)
+        return HStack(spacing: 6) {
+            Text(window.label).font(.caption2).foregroundStyle(.secondary).frame(width: 22, alignment: .leading)
+            ProgressView(value: min(used, 100), total: 100)
+                .tint(used >= 90 ? .red : used >= 70 ? .orange : .green)
+            Text("\(Int(used.rounded()))%").font(.caption2).monospacedDigit().frame(width: 30, alignment: .trailing)
         }
     }
 }
@@ -201,6 +213,7 @@ struct UsageBars: View {
 struct AddAccountSheet: View {
     @ObservedObject var model: Model
     @Environment(\.dismiss) private var dismiss
+    @State private var tool: Tool = .claude
     @State private var label = ""
     @State private var id = ""
     @State private var idEdited = false
@@ -210,20 +223,27 @@ struct AddAccountSheet: View {
         let problem = validation(registry)
         VStack(alignment: .leading, spacing: 14) {
             Text("Add a Subscription").font(.headline)
-            Text("acc creates a separate Claude Code config for it, shares your rules, settings, skills, plugins and MCP servers, then opens the browser to log in.")
+            Text("Consolidatex creates a separate folder for it, shares your existing config, then opens the login.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Form {
-                TextField("Name", text: $label, prompt: Text("e.g. Hello Team"))
+                Picker("Tool", selection: $tool) {
+                    ForEach(model.installedTools, id: \.self) { Text($0.spec.name).tag($0) }
+                }
+                TextField("Name", text: $label, prompt: Text("e.g. Work"))
                     .onChange(of: label) { new in
                         if !idEdited { id = registry?.suggestedID(for: new) ?? "" }
                     }
                 TextField("Short name", text: Binding(get: { id }, set: { id = $0; idEdited = true }),
-                          prompt: Text("used as claude @name and acc name"))
-                LabeledContent("Config folder") {
-                    Text("~/.claude-\(id.isEmpty ? "…" : id)").foregroundStyle(.secondary).textSelection(.enabled)
+                          prompt: Text("for acc and \(tool.spec.command) @name"))
+                LabeledContent("Folder") {
+                    Text("~/\(tool.spec.newAccountPrefix)\(id.isEmpty ? "…" : id)").foregroundStyle(.secondary).textSelection(.enabled)
                 }
+            }
+            if let hint = tool.spec.loginHint {
+                Label(hint, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if let problem, !label.isEmpty {
                 Label(problem, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.orange)
@@ -231,8 +251,8 @@ struct AddAccountSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Add and Log In") {
-                    model.add(label: label.trimmingCharacters(in: .whitespaces), id: id)
+                Button(tool.spec.loginNeedsTerminal ? "Add and Log In in Terminal" : "Add and Log In") {
+                    model.add(tool: tool, label: label.trimmingCharacters(in: .whitespaces), id: id)
                     if model.lastError == nil { dismiss() }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -240,14 +260,15 @@ struct AddAccountSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 440)
+        .frame(width: 460)
+        .onAppear { if let first = model.installedTools.first { tool = first } }
     }
 
     private func validation(_ registry: Registry?) -> String? {
         guard var registry else { return "the account registry could not be read" }
         if label.trimmingCharacters(in: .whitespaces).isEmpty { return "Enter a name" }
         do {
-            try registry.add(Account(id: id, label: label, configDir: "~/.claude-\(id)"))
+            try registry.add(registry.newAccount(tool: tool, label: label, id: id))
             return nil
         } catch {
             return String(describing: error)
@@ -255,7 +276,27 @@ struct AddAccountSheet: View {
     }
 }
 
-struct ContentUnavailable: View {
+struct EmptyState: View {
+    let installed: [Tool]
+    let add: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "person.2.badge.key").font(.system(size: 40)).foregroundStyle(.secondary)
+            Text("No accounts yet").font(.title3.weight(.semibold))
+            Text(installed.isEmpty
+                 ? "Install Claude Code, Codex or opencode first."
+                 : "Run `acc setup` in a terminal to import the accounts you already have, or add one here.")
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Add a Subscription", action: add).disabled(installed.isEmpty)
+        }
+        .padding(30)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct RegistryProblem: View {
     let message: String
     let reveal: () -> Void
 

@@ -9,15 +9,15 @@ public enum AccError: Error, Equatable, CustomStringConvertible {
     case ambiguous(String, [String])
     case duplicateID(String)
     case invalidID(String)
-    case claudeNotFound
-    case claudeFailed(String)
+    case toolNotFound(String)
+    case toolFailed(String, String)
     case usage(String)
     case system(String)
 
     public var description: String {
         switch self {
-        case .registryMissing(let path):
-            "no account registry at \(path) (create one with: acc add <id>)"
+        case .registryMissing:
+            "no accounts yet (run: acc setup)"
         case .registryUnreadable(let path, let reason):
             "cannot read \(path): \(reason)"
         case .unsupportedVersion(let v):
@@ -32,10 +32,10 @@ public enum AccError: Error, Equatable, CustomStringConvertible {
             "an account with id '\(id)' already exists"
         case .invalidID(let id):
             "'\(id)' is not a valid id: use lowercase letters, digits and '-', starting with a letter, and not an acc command"
-        case .claudeNotFound:
-            "claude is not on PATH"
-        case .claudeFailed(let reason):
-            "claude failed: \(reason)"
+        case .toolNotFound(let command):
+            "\(command) is not installed (not found on PATH)"
+        case .toolFailed(let command, let reason):
+            "\(command) failed: \(reason)"
         case .usage(let text), .system(let text):
             text
         }

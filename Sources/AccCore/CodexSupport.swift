@@ -1,0 +1,142 @@
+import Foundation
+
+/// Codex specifics. Everything lives under CODEX_HOME: auth.json, and
+/// sessions/YYYY/MM/DD/rollout-<timestamp>-<uuid>.jsonl transcripts whose token_count
+/// events carry the account's rate limits.
+public enum CodexSupport {
+    static func authStatus(_ runner: Runner, _ account: Account) throws -> Runner.AuthStatus {
+        // `codex login status` reports on stderr and exits 0 only when logged in.
+        let (code, _) = try runner.capture(["login", "status"], account: account)
+        let identity = identity(home: account.folder())
+        return Runner.AuthStatus(loggedIn: code == 0, email: identity.email, detail: identity.plan)
+    }
+
+    /// Email and plan from the id_token claims in auth.json (absent when Codex keeps the login in the keychain).
+    public static func identity(home: String) -> (email: String?, plan: String?) {
+        guard let data = FileManager.default.contents(atPath: home + "/auth.json"),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tokens = root["tokens"] as? [String: Any],
+              let idToken = tokens["id_token"] as? String
+        else { return (nil, nil) }
+        let parts = idToken.split(separator: ".")
+        guard parts.count >= 2, let claims = decodeBase64URL(String(parts[1])),
+              let payload = try? JSONSerialization.jsonObject(with: claims) as? [String: Any]
+        else { return (nil, nil) }
+        let auth = payload["https://api.openai.com/auth"] as? [String: Any]
+        return (payload["email"] as? String, auth?["chatgpt_plan_type"] as? String)
+    }
+
+    static func decodeBase64URL(_ s: String) -> Data? {
+        var b = s.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        b += String(repeating: "=", count: (4 - b.count % 4) % 4)
+        return Data(base64Encoded: b)
+    }
+
+    /// Rollout files, newest first, without reading them.
+    static func rollouts(home: String, limit: Int) -> [URL] {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: home + "/sessions")
+        func children(_ url: URL) -> [URL] {
+            ((try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? [])
+                .sorted { $0.lastPathComponent > $1.lastPathComponent }
+        }
+        var found: [URL] = []
+        for year in children(root) {
+            for month in children(year) {
+                for day in children(month) {
+                    found += children(day).filter { $0.lastPathComponent.hasPrefix("rollout-") && $0.pathExtension == "jsonl" }
+                    if found.count >= limit { return Array(found.prefix(limit)) }
+                }
+            }
+        }
+        return found
+    }
+
+    /// The most recent rate limits Codex recorded for this account.
+    public static func latestUsage(home: String, scanning limit: Int = 25) -> Usage? {
+        for file in rollouts(home: home, limit: limit) {
+            for line in tailLines(of: file, bytes: 256 * 1024).reversed() where line.contains("\"token_count\"") {
+                if let usage = parseTokenCount(line) { return usage }
+            }
+        }
+        return nil
+    }
+
+    /// A token_count event line → Usage. Only the main "codex" limit counts toward the subscription.
+    public static func parseTokenCount(_ line: String) -> Usage? {
+        struct Window: Decodable { let used_percent: Double; let window_minutes: Int?; let resets_at: Double? }
+        struct Limits: Decodable { let limit_id: String?; let primary: Window?; let secondary: Window? }
+        struct Payload: Decodable { let type: String; let rate_limits: Limits? }
+        struct Event: Decodable { let timestamp: String?; let payload: Payload }
+        guard let event = try? JSONDecoder().decode(Event.self, from: Data(line.utf8)),
+              event.payload.type == "token_count", let limits = event.payload.rate_limits,
+              limits.limit_id == nil || limits.limit_id == "codex"
+        else { return nil }
+        let windows = [limits.primary, limits.secondary].compactMap { w -> Usage.Window? in
+            guard let w, let resets = w.resets_at else { return nil }
+            return Usage.Window(label: Usage.Window.label(minutes: w.window_minutes ?? 0), usedPercentage: w.used_percent,
+                                resetsAt: Date(timeIntervalSince1970: resets))
+        }
+        let recorded = event.timestamp.flatMap { ISO8601DateFormatter.withFractions.date(from: $0) } ?? Date()
+        return windows.isEmpty ? nil : Usage(windows: windows, recordedAt: recorded)
+    }
+
+    /// Codex sessions started in `cwd`, read from the session_meta line at the top of each rollout.
+    static func sessions(in cwd: String, account: Account, home: String, scanning limit: Int = 300) -> [Session] {
+        struct Meta: Decodable { let id: String?; let cwd: String? }
+        struct Head: Decodable { let type: String; let payload: Meta }
+        let target = canonical(cwd)
+        return rollouts(home: account.folder(home: home), limit: limit).compactMap { file in
+            guard let first = firstLine(of: file),
+                  let head = try? JSONDecoder().decode(Head.self, from: Data(first.utf8)),
+                  head.type == "session_meta", let dir = head.payload.cwd, canonical(dir) == target,
+                  let id = head.payload.id ?? sessionID(fromFileName: file.lastPathComponent),
+                  let date = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date
+            else { return nil }
+            return Session(id: id, account: account, transcript: file.path, modified: date)
+        }
+    }
+
+    /// rollout-2026-10-30T10-00-00-<uuid>[_<uuid>].jsonl → <uuid>
+    static func sessionID(fromFileName name: String) -> String? {
+        let pattern = #"^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([0-9a-fA-F-]{36})"#
+        guard let match = name.range(of: pattern, options: .regularExpression) else { return nil }
+        return String(name[match].suffix(36))
+    }
+
+    /// Copies the rollout to the same sessions/YYYY/MM/DD folder of `account`, where `codex resume <id>` scans.
+    static func copy(_ session: Session, to account: Account, home: String) throws {
+        let source = URL(fileURLWithPath: session.transcript)
+        let day = source.deletingLastPathComponent()
+        let relative = [day.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent,
+                        day.deletingLastPathComponent().lastPathComponent, day.lastPathComponent].joined(separator: "/")
+        try copyReplacing([source], into: URL(fileURLWithPath: account.folder(home: home) + "/sessions/" + relative))
+    }
+
+    static func firstLine(of url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let chunk = (try? handle.read(upToCount: 64 * 1024)) ?? Data()
+        return String(decoding: chunk, as: UTF8.self).split(separator: "\n", maxSplits: 1).first.map(String.init)
+    }
+
+    static func tailLines(of url: URL, bytes: Int) -> [String] {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        let start = size > UInt64(bytes) ? size - UInt64(bytes) : 0
+        try? handle.seek(toOffset: start)
+        let text = String(decoding: (try? handle.readToEnd()) ?? Data(), as: UTF8.self)
+        var lines = text.split(separator: "\n").map(String.init)
+        if start > 0, !lines.isEmpty { lines.removeFirst() }
+        return lines
+    }
+}
+
+extension ISO8601DateFormatter {
+    nonisolated(unsafe) static let withFractions: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+}

@@ -2,33 +2,65 @@ import Foundation
 import Testing
 @testable import AccCore
 
-let sample = Registry(current: "cto", accounts: [
-    Account(id: "team", label: "Haz (team)", configDir: nil, email: "hazli@cynco.io"),
-    Account(id: "personal", label: "Haz (Personal)", configDir: "~/.claude-acc2", email: "hazli@cynco.io"),
-    Account(id: "cto", label: "CTO", configDir: "~/.claude-acc4", email: "cto@cynco.io"),
-    Account(id: "hello", label: "Hello", configDir: "/abs/hello", email: "hello@cynco.io"),
+let sample = Registry(current: [.claude: "cto", .codex: "work"], accounts: [
+    Account(id: "team", tool: .claude, label: "Haz (team)", configDir: nil, email: "hazli@cynco.io"),
+    Account(id: "work", tool: .codex, label: "Work", configDir: nil, email: "w@cynco.io"),
+    Account(id: "personal", tool: .claude, label: "Haz (Personal)", configDir: "~/.claude-acc2", email: "hazli@cynco.io"),
+    Account(id: "cto", tool: .claude, label: "CTO", configDir: "~/.claude-acc4", email: "cto@cynco.io"),
+    Account(id: "side", tool: .codex, label: "Side", configDir: "/abs/side"),
 ])
 
 func tempStore() -> RegistryStore {
     RegistryStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent("acc-tests-\(UUID().uuidString)"))
 }
 
-@Suite struct Resolve {
-    @Test func byPosition() throws { #expect(try sample.resolve("3").id == "cto") }
-    @Test func byID() throws { #expect(try sample.resolve("hello").id == "hello") }
-    @Test func byLabelCaseInsensitive() throws { #expect(try sample.resolve("haz (personal)").id == "personal") }
-    @Test func byUniqueFragment() throws { #expect(try sample.resolve("pers").id == "personal") }
-    @Test func byEmail() throws { #expect(try sample.resolve("cto@").id == "cto") }
+func tempHome() -> String {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent("acc-home-\(UUID().uuidString)").path
+    try! FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+    return canonical(path)
+}
 
-    @Test func ambiguousFragmentNamesTheCandidates() {
-        #expect(throws: AccError.ambiguous("haz", ["team", "personal"])) { try sample.resolve("haz") }
+@Suite struct Resolve {
+    @Test func orderedGroupsByToolKeepingUserOrder() {
+        #expect(sample.ordered.map(\.id) == ["team", "personal", "cto", "work", "side"])
+    }
+
+    @Test func positionsFollowDisplayOrder() throws {
+        #expect(try sample.resolve("3").id == "cto")
+        #expect(try sample.resolve("4").id == "work")
+        #expect(try sample.resolve("2", tool: .codex).id == "side")
+    }
+
+    @Test func byIDLabelFragmentEmail() throws {
+        #expect(try sample.resolve("side").id == "side")
+        #expect(try sample.resolve("haz (personal)").id == "personal")
+        #expect(try sample.resolve("pers").id == "personal")
+        #expect(try sample.resolve("cto@").id == "cto")
+    }
+
+    @Test func toolScopeNarrowsAmbiguity() throws {
+        #expect(throws: AccError.ambiguous("c", ["team", "personal", "cto", "work"])) { try sample.resolve("c") }
+        #expect(try sample.resolve("c", tool: .codex).id == "work")
     }
 
     @Test func unknownAndOutOfRange() {
         #expect(throws: AccError.noMatch("nope")) { try sample.resolve("nope") }
         #expect(throws: AccError.noMatch("9")) { try sample.resolve("9") }
         #expect(throws: AccError.noMatch("0")) { try sample.resolve("0") }
-        #expect(throws: AccError.noMatch("")) { try sample.resolve("") }
+    }
+
+    @Test func accountFromVariable() {
+        #expect(sample.account(for: .claude, configDir: nil)?.id == "team")
+        #expect(sample.account(for: .codex, configDir: "")?.id == "work")
+        #expect(sample.account(for: .codex, configDir: "/abs/side/")?.id == "side")
+        #expect(sample.account(for: .claude, configDir: "/abs/side") == nil)
+    }
+
+    @Test func folders() {
+        #expect(sample.account(id: "team")!.folder(home: "/h") == "/h/.claude")
+        #expect(sample.account(id: "work")!.folder(home: "/h") == "/h/.codex")
+        #expect(sample.account(id: "cto")!.folder(home: "/h") == "/h/.claude-acc4")
+        #expect(Account(id: "o", tool: .opencode, label: "o", configDir: nil).folder(home: "/h") == "/h/.local/share")
     }
 }
 
@@ -40,38 +72,33 @@ func tempStore() -> RegistryStore {
     }
 
     @Test func sampleIsValid() throws { try sample.validate() }
-    @Test func duplicateID() { #expect(problems { $0.accounts[1].id = "team" } == ["duplicate id 'team'"]) }
-    @Test func currentMustExist() { #expect(problems { $0.current = "gone" } == ["current account 'gone' is not in the list"]) }
-    @Test func reservedID() { #expect(problems { $0.accounts[3].id = "ls" } == ["id 'ls' is reserved for an acc command"]) }
-    @Test func numericIDWouldShadowPositions() { #expect(problems { $0.accounts[3].id = "4" }.first?.hasPrefix("invalid id '4'") == true) }
-    @Test func singleDefaultDir() { #expect(problems { $0.accounts[1].configDir = nil } == ["more than one account uses the default config dir (configDir: null)"]) }
-    @Test func emptyLabel() { #expect(problems { $0.accounts[0].label = " " } == ["account 'team' has an empty label"]) }
-    @Test func empty() { #expect(problems { $0.accounts = [] } == ["no accounts", "current account 'cto' is not in the list"]) }
-
+    @Test func emptyIsValid() throws { try Registry.empty.validate() }
+    @Test func duplicateID() { #expect(problems { $0.accounts[2].id = "team" } == ["duplicate id 'team'"]) }
+    @Test func reservedIDs() {
+        #expect(problems { $0.accounts[4].id = "codex" } == ["id 'codex' is reserved for an acc command"])
+        #expect(problems { $0.accounts[4].id = "launch" } == ["id 'launch' is reserved for an acc command"])
+    }
+    @Test func oneDefaultFolderPerTool() {
+        #expect(problems { $0.accounts[2].configDir = nil } == ["more than one Claude Code account uses the default folder (configDir: null)"])
+    }
+    @Test func currentMustBeOfItsTool() {
+        #expect(problems { $0.current[.codex] = "cto" } == ["current Codex account 'cto' is not a Codex account in the list"])
+        #expect(problems { $0.current[.claude] = nil } == ["no current Claude Code account"])
+    }
     @Test func futureVersionIsRejected() {
         var r = sample
-        r.version = 2
-        #expect(throws: AccError.unsupportedVersion(2)) { try r.validate() }
-    }
-}
-
-@Suite struct ConfigDir {
-    @Test func defaultAccountLeavesVariableUnset() {
-        #expect(sample.accounts[0].resolvedConfigDir(home: "/h") == nil)
-        #expect(Claude.environment(for: sample.accounts[0], base: ["CLAUDE_CONFIG_DIR": "/stale", "X": "1"]) == ["X": "1"])
-    }
-
-    @Test func tildeExpands() {
-        #expect(sample.accounts[2].resolvedConfigDir(home: "/h") == "/h/.claude-acc4")
-        #expect(sample.accounts[3].resolvedConfigDir(home: "/h") == "/abs/hello")
+        r.version = 3
+        #expect(throws: AccError.unsupportedVersion(3)) { try r.validate() }
     }
 }
 
 @Suite struct Store {
-    @Test func roundTrip() throws {
+    @Test func roundTripKeepsToolKeyedCurrent() throws {
         let store = tempStore()
         try store.save(sample)
         #expect(try store.load() == sample)
+        let text = try String(contentsOf: store.file, encoding: .utf8)
+        #expect(text.contains(#""codex" : "work""#))
     }
 
     @Test func missingFile() {
@@ -82,26 +109,75 @@ func tempStore() -> RegistryStore {
     @Test func invalidWriteLeavesFileUntouched() throws {
         let store = tempStore()
         try store.save(sample)
-        #expect(throws: (any Error).self) { try store.update { $0.current = "gone" } }
+        #expect(throws: (any Error).self) { try store.update { $0.current[.codex] = "cto" } }
         #expect(try store.load() == sample)
-    }
-
-    @Test func failedChangeLeavesFileUntouched() throws {
-        let store = tempStore()
-        try store.save(sample)
-        #expect(throws: AccError.noMatch("zzz")) { try store.update { $0.current = try $0.resolve("zzz").id } }
-        #expect(try store.load().current == "cto")
     }
 
     @Test func malformedJSONNamesTheProblem() throws {
         let store = tempStore()
         try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true)
-        try Data(#"{"version":1,"current":"a","accounts":[{"id":"a"}]}"#.utf8).write(to: store.file)
+        try Data(#"{"version":2,"current":{},"accounts":[{"id":"a","tool":"claude"}]}"#.utf8).write(to: store.file)
         #expect {
             try store.load()
         } throws: { error in
             guard case AccError.registryUnreadable(_, let reason) = error else { return false }
             return reason == "missing field 'label' at .accounts[0]"
         }
+    }
+}
+
+@Suite struct Editing {
+    @Test func firstAccountOfAToolBecomesCurrent() throws {
+        var r = sample
+        try r.add(Account(id: "oc", tool: .opencode, label: "OC", configDir: nil))
+        #expect(r.current[.opencode] == "oc")
+        try r.add(Account(id: "oc2", tool: .opencode, label: "OC2", configDir: "~/.opencode-oc2"))
+        #expect(r.current[.opencode] == "oc")
+    }
+
+    @Test func failedAddChangesNothing() {
+        var r = sample
+        #expect(throws: (any Error).self) { try r.add(Account(id: "two", tool: .claude, label: "Two", configDir: nil)) }
+        #expect(throws: AccError.duplicateID("cto")) { try r.add(Account(id: "cto", tool: .codex, label: "x", configDir: "~/x")) }
+        #expect(throws: AccError.invalidID("opencode")) { try r.add(Account(id: "opencode", tool: .codex, label: "x", configDir: "~/x")) }
+        #expect(r == sample)
+    }
+
+    @Test func useSwitchesOnlyThatTool() throws {
+        var r = sample
+        try r.use("side")
+        #expect(r.current == [.claude: "cto", .codex: "side"])
+    }
+
+    @Test func removeGuardsCurrentAndPrimaryWhileOthersRemain() throws {
+        var r = sample
+        #expect(throws: (any Error).self) { try r.remove("cto") }
+        #expect(throws: (any Error).self) { try r.remove("team") }
+        try r.remove("personal")
+        try r.use("work")
+        try r.remove("side")
+        try r.remove("work")
+        #expect(r.current[.codex] == nil)
+        #expect(r.accounts.map(\.id) == ["team", "cto"])
+        try r.validate()
+    }
+
+    @Test func moveWithinTool() {
+        var r = sample
+        r.move("cto", toToolIndex: 0)
+        #expect(r.ordered.map(\.id) == ["cto", "team", "personal", "work", "side"])
+        r.move("cto", toToolIndex: 99)
+        #expect(r.ordered.map(\.id) == ["team", "personal", "cto", "work", "side"])
+        r.move("side", toToolIndex: 0)
+        #expect(r.ordered.map(\.id) == ["team", "personal", "cto", "side", "work"])
+    }
+
+    @Test func suggestedIDsAndNewAccountFolders() {
+        #expect(sample.suggestedID(for: "Hello Team!") == "hello-team")
+        #expect(sample.suggestedID(for: "CTO") == "cto-2")
+        #expect(sample.suggestedID(for: "Codex") == "codex-2")
+        #expect(sample.suggestedID(for: "42") == "acc-42")
+        #expect(sample.newAccount(tool: .codex, label: "Client A").configDir == "~/.codex-client-a")
+        #expect(sample.newAccount(tool: .opencode, label: "Mine").configDir == "~/.opencode-mine")
     }
 }

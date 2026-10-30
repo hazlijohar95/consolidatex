@@ -1,40 +1,39 @@
 import AccCore
 import Foundation
 
-let version = "1.2.0"
+let version = "2.0.0"
 
 let usage = """
-    acc: choose which Claude Code subscription new `claude` sessions use.
+    acc: run several subscriptions of Claude Code, Codex and opencode side by side.
 
-      acc                     pick an account (fzf; press 1-9 to jump)
-      acc <account>           switch to it: `acc cto`, `acc 4`
-      acc auto                switch to the account with the most quota left
+      acc setup [--yes]          first run: import existing accounts, hook up your shell
+      acc                        pick an account (fzf; 1-9 jump)
+      acc <account>              make it the account new sessions of its tool use
+      acc <tool> [<account>]     same, among one tool's accounts (acc codex work)
+      acc ls [<tool>] [--json]   list accounts with last-seen usage (● = current)
+      acc auto [<tool>]          switch to the account with the most quota left
       acc continue [<account>] [--session <id>]
-                              resume this folder's latest conversation on another
-                              account (default: the one with the most quota left)
-      acc ls [--json]         list accounts with last-seen usage (● = current)
-      acc current [--json]    show the current account
-      acc run <account> [--] [claude args]
-                              run claude once on an account without switching
-      acc add <id> [--label <label>] [--dir <config dir>]
-                              register an account and log it in if needed
-      acc login <account>     log an account in again and record its email
-      acc rename <account> <label>
-      acc rm <account>        unregister (its config dir is kept)
-      acc doctor [--fix]      check accounts are logged in and share config with the primary
-      acc sync [--prune]      link shared config and mirror MCP servers from the primary;
-                              --prune also removes MCP servers the primary does not have
-      acc statusline          Claude Code status line: shows the account and records its usage
-      acc ui                  open the Consolidatex window
-      acc dir [<account>]     print CLAUDE_CONFIG_DIR for an account (empty = default)
+                                 resume this folder's latest conversation on another account
+                                 (default: the roomiest); Claude Code and Codex
+      acc run <account> [--] [args]
+                                 run the account's tool once on it, without switching
+      acc add <tool> [<name>] [--id <id>] [--dir <folder>]
+                                 add a subscription: new folder, shared config, login
+      acc login <account>        log an account in again
+      acc rename <account> <name> / acc rm <account>
+      acc doctor [--fix]         check logins, shared config and setup
+      acc sync [--prune]         share each tool's config from its primary account
+      acc ui                     open the Consolidatex window
       acc version
 
-    <account> is a position (1-9), an id, or any unique part of a label or email.
-    In zsh, `claude @<account> …` is short for `acc run <account> …`.
-    Registry: $ACC_HOME/accounts.json (default ~/.config/acc).
+    Tools: claude, codex, opencode. After `acc setup`, typing `claude`, `codex` or `opencode`
+    starts the current account, and `claude @work …` runs one session on another.
+    <account> is a position, an id, or any unique part of a name or email.
     """
 
 let store = RegistryStore.standard()
+let usages = Usages(store: UsageStore(registryStore: store))
+let environment = ProcessInfo.processInfo.environment
 let isTTY = isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1
 
 func fail(_ error: AccError) -> Never {
@@ -43,7 +42,8 @@ func fail(_ error: AccError) -> Never {
     exit(1)
 }
 
-func say(_ line: String) { print(line) }
+func say(_ line: String = "") { print(line) }
+func warn(_ line: String) { FileHandle.standardError.write(Data("acc: \(line)\n".utf8)) }
 
 func json<T: Encodable>(_ value: T) throws -> String {
     let encoder = JSONEncoder()
@@ -55,30 +55,41 @@ func pad(_ s: String, _ width: Int) -> String {
     s.count >= width ? s : s + String(repeating: " ", count: width - s.count)
 }
 
-let usageStore = UsageStore(registryStore: store)
+func tool(named name: String) -> Tool? { Tool.allCases.first { $0.rawValue == name || $0.spec.command == name } }
 
-func rows(_ registry: Registry) -> [String] {
-    let usage = usageStore.all(registry)
-    let idWidth = registry.accounts.map(\.id.count).max() ?? 0
-    let labelWidth = registry.accounts.map(\.label.count).max() ?? 0
-    let emailWidth = registry.accounts.map { $0.email?.count ?? 0 }.max() ?? 0
-    return registry.accounts.enumerated().map { i, a in
-        let mark = a.id == registry.current ? "●" : " "
-        return "\(mark) \(i + 1)  \(pad(a.id, idWidth))  \(pad(a.label, labelWidth))  \(pad(a.email ?? "", emailWidth))  \(UsageFormat.summary(usage[a.id]))"
+func loadOrEmpty() throws -> Registry {
+    do { return try store.load() } catch AccError.registryMissing { return .empty }
+}
+
+func rows(_ registry: Registry, tool: Tool? = nil) -> [(Account, String)] {
+    let shown = registry.ordered.filter { tool == nil || $0.tool == tool }
+    let usage = usages.all(registry)
+    let w = (id: shown.map(\.id.count).max() ?? 0, label: shown.map(\.label.count).max() ?? 0,
+             email: shown.map { ($0.email ?? "").count }.max() ?? 0)
+    return shown.map { a in
+        let position = registry.ordered.firstIndex(of: a)! + 1
+        let mark = registry.isCurrent(a) ? "●" : " "
+        let line = "\(mark) \(position)  \(pad(a.tool.rawValue, 8))  \(pad(a.id, w.id))  \(pad(a.label, w.label))  \(pad(a.email ?? "", w.email))  \(UsageFormat.summary(usage[a.id], tool: a.tool))"
+        return (a, line)
     }
 }
 
 func describe(_ a: Account) -> String {
-    "\(a.id)  \(a.label)" + (a.email.map { "  (\($0))" } ?? "")
+    "\(a.tool.spec.name): \(a.id)  \(a.label)" + (a.email.map { "  (\($0))" } ?? "")
 }
 
-func switchTo(_ ref: String) throws {
-    let registry = try store.update { r in r.current = try r.resolve(ref).id }
-    say("claude → \(describe(registry.currentAccount))")
+func switchTo(_ ref: String, tool: Tool? = nil) throws {
+    var chosen: Account?
+    try store.update { r in
+        let account = try r.resolve(ref, tool: tool)
+        try r.use(account.id)
+        chosen = account
+    }
+    if let chosen { say("\(chosen.tool.spec.command) → \(describe(chosen))") }
 }
 
 func which(_ name: String) -> String? {
-    for dir in (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":") {
+    for dir in (environment["PATH"] ?? "").split(separator: ":") {
         let path = "\(dir)/\(name)"
         if FileManager.default.isExecutableFile(atPath: path) { return path }
     }
@@ -86,21 +97,22 @@ func which(_ name: String) -> String? {
 }
 
 /// Interactive pick. Returns the chosen account id, or nil if cancelled.
-func pick(_ registry: Registry) throws -> String? {
-    let lines = zip(registry.accounts, rows(registry)).map { "\($0.id)\t\($1)" }
+func pick(_ registry: Registry, tool: Tool?) throws -> String? {
+    let lines = rows(registry, tool: tool).map { "\($0.0.id)\t\($0.1)" }
+    guard !lines.isEmpty else { throw AccError.usage("no accounts yet (run: acc setup)") }
     guard let fzf = which("fzf") else {
         lines.forEach { say(String($0.split(separator: "\t", maxSplits: 1)[1])) }
         FileHandle.standardOutput.write(Data("account: ".utf8))
         guard let answer = readLine(), !answer.isEmpty else { return nil }
-        return try registry.resolve(answer).id
+        return try registry.resolve(answer, tool: tool).id
     }
-    let jumps = registry.accounts.prefix(9).enumerated().map { "\($0 + 1):become(echo \($1.id))" }
+    let shown = registry.ordered.filter { tool == nil || $0.tool == tool }
+    let jumps = shown.prefix(9).enumerated().map { "\($0 + 1):become(echo \($1.id))" }
     let process = Process()
     process.executableURL = URL(fileURLWithPath: fzf)
     process.arguments = [
-        "--height=~\(registry.accounts.count + 4)", "--reverse", "--no-sort",
-        "--delimiter=\t", "--with-nth=2..",
-        "--prompt=claude account › ", "--header=new claude sessions everywhere will use it",
+        "--height=~\(lines.count + 4)", "--reverse", "--no-sort", "--delimiter=\t", "--with-nth=2..",
+        "--prompt=account › ", "--header=new sessions of that tool, in every terminal, will use it",
         "--bind=\(jumps.joined(separator: ","))",
     ]
     let input = Pipe(), output = Pipe()
@@ -130,225 +142,329 @@ func flag(_ name: String, in args: inout [String]) -> Bool {
     return true
 }
 
-func logIn(_ account: Account, claude: Claude) throws -> Claude.AuthStatus {
-    var status = try claude.authStatus(for: account)
+/// Logs the account in if it is not already, and returns its status.
+func ensureLoggedIn(_ account: Account, runner: Runner) throws -> Runner.AuthStatus {
+    var status = try runner.authStatus(for: account)
     if !status.loggedIn {
-        say("Log in to the account for '\(account.label)' in the browser window that opens.")
-        let code = try claude.run(account: account, arguments: ["auth", "login"])
-        guard code == 0 else { throw AccError.claudeFailed("`claude auth login` exited \(code)") }
-        status = try claude.authStatus(for: account)
-        guard status.loggedIn else { throw AccError.claudeFailed("still not logged in after `claude auth login`") }
+        say("Log in to \(account.tool.spec.name) for '\(account.label)'.")
+        if let hint = account.tool.spec.loginHint { say(hint) }
+        let code = try runner.run(account: account, arguments: account.tool.spec.loginArguments)
+        guard code == 0 else { throw AccError.toolFailed(runner.spec.command, "login exited \(code)") }
+        status = try runner.authStatus(for: account)
+        guard status.loggedIn else { throw AccError.toolFailed(runner.spec.command, "still not logged in after login") }
     }
     return status
 }
 
-/// Per-account outcomes written from concurrentPerform's threads.
-final class Results: @unchecked Sendable {
+/// Per-account results written from concurrentPerform's threads.
+final class Results<T>: @unchecked Sendable {
     private let lock = NSLock()
-    private var values: [Result<Claude.AuthStatus, AccError>?]
+    private var values: [T?]
     init(count: Int) { values = Array(repeating: nil, count: count) }
-    subscript(i: Int) -> Result<Claude.AuthStatus, AccError>? {
+    subscript(i: Int) -> T? {
         get { lock.withLock { values[i] } }
         set { lock.withLock { values[i] = newValue } }
     }
 }
 
+func checkAll(_ registry: Registry) -> [String: AccountHealth] {
+    let accounts = registry.ordered
+    let runners = Dictionary(uniqueKeysWithValues: Tool.allCases.map { ($0, try? Runner.locate($0)) })
+    let results = Results<AccountHealth>(count: accounts.count)
+    DispatchQueue.concurrentPerform(iterations: accounts.count) { i in
+        results[i] = AccountHealth.check(accounts[i], in: registry, runner: runners[accounts[i].tool] ?? nil)
+    }
+    return Dictionary(uniqueKeysWithValues: accounts.enumerated().map { ($1.id, results[$0]!) })
+}
+
 func doctor(fix: Bool) throws -> Bool {
     let registry = try store.load()
-    let claude = try Claude.locate()
-    let results = Results(count: registry.accounts.count)
-    DispatchQueue.concurrentPerform(iterations: registry.accounts.count) { i in
-        let account = registry.accounts[i]
-        if let dir = account.resolvedConfigDir(), !FileManager.default.fileExists(atPath: dir) {
-            results[i] = .failure(.system("config dir \(dir) does not exist"))
-            return
-        }
-        do { results[i] = .success(try claude.authStatus(for: account)) } catch {
-            results[i] = .failure(error as? AccError ?? .system(error.localizedDescription))
-        }
-    }
-
+    let health = checkAll(registry)
     var healthy = true
     var emails: [String: String] = [:]
     let width = registry.accounts.map(\.id.count).max() ?? 0
-    for (i, account) in registry.accounts.enumerated() {
+    for account in registry.ordered {
+        let h = health[account.id]!
         let name = pad(account.id, width)
-        switch results[i]! {
-        case .failure(let e):
+        if !h.problems.isEmpty {
             healthy = false
-            say("✗ \(name)  \(e)")
-        case .success(let s) where !s.loggedIn:
-            healthy = false
-            say("✗ \(name)  not logged in → acc login \(account.id)")
-        case .success(let s) where s.email != account.email:
-            if fix, let email = s.email { emails[account.id] = email }
-            let note = fix ? "recorded" : "run acc doctor --fix to record it"
-            say("! \(name)  logged in as \(s.email ?? "unknown"), registry says \(account.email ?? "nothing") (\(note))")
-        case .success(let s):
-            say("✓ \(name)  \(s.email ?? "")")
+            h.problems.forEach { say("✗ \(name)  \($0)") }
+        } else if let email = h.email, email != account.email {
+            if fix { emails[account.id] = email }
+            say("! \(name)  logged in as \(email), registry says \(account.email ?? "nothing") (\(fix ? "recorded" : "acc doctor --fix records it"))")
+        } else {
+            say("✓ \(name)  \(account.tool.spec.name)  \(h.email ?? h.detail ?? "logged in")")
+        }
+        h.issues.forEach { say("! \(name)  \($0)") }
+    }
+    if let shell = ShellInit.Shell.from(path: environment["SHELL"]) {
+        let (file, line) = shell.hook()
+        if !((try? String(contentsOfFile: file, encoding: .utf8)) ?? "").contains(line) {
+            say("! shell     \(shell.rawValue) hook not installed, so `claude`/`codex`/`opencode` ignore acc → acc setup")
         }
     }
-    for account in registry.accounts where account.id != registry.primary.id {
-        for issue in Shared.issues(account, primary: registry.primary) { say("! \(pad(account.id, width))  \(issue)") }
-    }
-    if !emails.isEmpty {
-        try store.update { r in for (id, email) in emails { r.recordEmail(email, for: id) } }
-    }
+    if !emails.isEmpty { try store.update { r in for (id, email) in emails { r.recordEmail(email, for: id) } } }
     return healthy
 }
 
-
-/// The roomiest account other than `excluded`, if any is known to have room.
-func roomiest(_ registry: Registry, excluding excluded: String?) -> Account? {
-    let usage = usageStore.all(registry)
-    return registry.byHeadroom(usage, excluding: Set([excluded].compactMap { $0 })).first { (usage[$0.id]?.load(at: Date()) ?? 0) < 90 }
-}
-
 func statusLine() {
-    let input = (try? JSONDecoder().decode(StatusInput.self, from: FileHandle.standardInput.readDataToEndOfFile()))
-        ?? .empty
+    let input = (try? JSONDecoder().decode(StatusInput.self, from: FileHandle.standardInput.readDataToEndOfFile())) ?? .empty
     guard let registry = try? store.load() else {
         print("✳ acc: registry problem, run acc doctor")
         return
     }
     let now = Date()
-    let account = registry.account(forConfigDir: ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"])
-    var usage = account.flatMap { usageStore.load($0.id) }
+    let account = registry.account(for: .claude, configDir: environment["CLAUDE_CONFIG_DIR"])
+    var usage = account.flatMap { usages.usage(for: $0) }
     if let live = input.usage(at: now), let account {
-        try? usageStore.record(live, for: account.id)
+        try? usages.store.record(live, for: account.id)
         usage = live
     }
-    print(StatusLine.render(account: account, usage: usage, input: input,
-                            suggestion: roomiest(registry, excluding: account?.id), now: now))
+    let suggestion = registry.roomiest(.claude, usages.all(registry), excluding: account?.id, at: now)
+    print(StatusLine.render(account: account, usage: usage, input: input, suggestion: suggestion, now: now))
+}
+
+/// Starts a tool on its current account. The shell functions from `acc shell-init` call this.
+/// Never stops the tool from starting: with no registry it runs the tool untouched.
+func launch(_ tool: Tool, _ arguments: [String]) throws -> Never {
+    var args = arguments
+    let runner = try Runner.locate(tool)
+    if let pinned = environment[tool.spec.variable], !pinned.isEmpty { throw runner.exec(account: nil, arguments: args) }
+    if let first = args.first, first.hasPrefix("@"), first.count > 1 {
+        let account = try store.load().resolve(String(first.dropFirst()), tool: tool)
+        args.removeFirst()
+        throw runner.exec(account: account, arguments: args)
+    }
+    let registry: Registry
+    do {
+        registry = try store.load()
+    } catch AccError.registryMissing {
+        throw runner.exec(account: nil, arguments: args)
+    } catch {
+        warn("\(error)\nacc: starting \(tool.spec.command) on its default account instead (run: acc doctor)")
+        throw runner.exec(account: nil, arguments: args)
+    }
+    throw runner.exec(account: registry.current(for: tool), arguments: args)
 }
 
 func continueSession(_ ref: String?, sessionID: String?) throws -> Never {
     let registry = try store.load()
     let cwd = FileManager.default.currentDirectoryPath
-    let sessions = Sessions.forProject(cwd, in: registry)
+    let named = try ref.map { try registry.resolve($0) }
+    if let named, !Sessions.supports(named.tool) {
+        throw AccError.usage("\(named.tool.spec.name) conversations cannot move between accounts")
+    }
+    let sessions = Sessions.forProject(cwd, in: registry, tool: named?.tool)
     let candidates = sessionID.map { id in sessions.filter { $0.id.hasPrefix(id) } } ?? sessions
     guard let session = candidates.first else {
-        throw AccError.usage(sessionID.map { "no session \($0) for \(cwd)" } ?? "no Claude Code conversation found for \(cwd)")
+        throw AccError.usage(sessionID.map { "no conversation \($0) for \(cwd)" } ?? "no Claude Code or Codex conversation found for \(cwd)")
     }
-    guard let target = try ref.map(registry.resolve) ?? roomiest(registry, excluding: session.account.id) else {
-        throw AccError.usage("every other account is near its limit; name one: acc continue <account>")
+    let tool = session.account.tool
+    guard let target = named ?? registry.roomiest(tool, usages.all(registry), excluding: session.account.id) else {
+        throw AccError.usage("every other \(tool.spec.name) account is near its limit; name one: acc continue <account>")
     }
     if target.id != session.account.id { try Sessions.copy(session, to: target) }
     let age = UsageFormat.relative(Date(), from: session.modified).replacingOccurrences(of: "in ", with: "")
-    FileHandle.standardError.write(Data("↪ continuing \(session.id.prefix(8)) (last active \(age) ago on \(session.account.id)) on \(target.id)\n".utf8))
-    throw try Claude.locate().exec(account: target, arguments: ["--resume", session.id])
+    warn("↪ continuing \(session.id.prefix(8)) (last active \(age) ago on \(session.account.id)) on \(target.id)")
+    throw try Runner.locate(tool).exec(account: target, arguments: Sessions.resumeArguments(session))
 }
+
+// MARK: setup
+
+let assumeYes = CommandLine.arguments.contains("--yes")
+
+func ask(_ question: String) -> Bool {
+    if assumeYes { say("\(question) yes"); return true }
+    guard isTTY else { say("\(question) skipped (not interactive; rerun with --yes)"); return false }
+    FileHandle.standardOutput.write(Data("\(question) [Y/n] ".utf8))
+    let answer = (readLine() ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+    return answer.isEmpty || answer == "y" || answer == "yes"
+}
+
+func appPath() -> String? {
+    ["\(userHome())/Applications/Consolidatex.app", "/Applications/Consolidatex.app"]
+        .first { FileManager.default.fileExists(atPath: $0) }
+}
+
+func setup() throws {
+    say("Consolidatex setup\n")
+    let installed = Tool.allCases.filter { (try? Runner.locate($0)) != nil }
+    for tool in Tool.allCases {
+        say(installed.contains(tool) ? "  ✓ \(tool.spec.name)" : "  – \(tool.spec.name) (not installed)")
+    }
+
+    var registry = try loadOrEmpty()
+    let candidates = Discovery.find(excluding: registry).filter { installed.contains($0.tool) }
+    if candidates.isEmpty {
+        say(registry.accounts.isEmpty ? "\nNo existing accounts found. Add one with: acc add <tool>" : "\nNo new accounts to import.")
+    } else {
+        say("\nFound \(candidates.count) account\(candidates.count == 1 ? "" : "s"):")
+        candidates.forEach { say("  \(pad($0.tool.spec.name, 12)) \(pad($0.label, 24)) \($0.configDir ?? "default folder")") }
+        if ask("Import them?") {
+            for c in candidates {
+                var account = registry.newAccount(tool: c.tool, label: c.label)
+                account.configDir = c.configDir
+                if let runner = try? Runner.locate(c.tool), let status = try? runner.authStatus(for: account) {
+                    account.email = status.email
+                }
+                try registry.add(account)
+                say("  + \(account.id)  \(account.label)\(account.email.map { "  (\($0))" } ?? "")")
+            }
+            try store.save(registry)
+        }
+    }
+
+    if let shell = ShellInit.Shell.from(path: environment["SHELL"]) {
+        let file = shell.hook().file.replacingOccurrences(of: userHome(), with: "~")
+        if ask("\nAdd the \(shell.rawValue) hook to \(file), so `claude`, `codex` and `opencode` start on the account you pick?") {
+            switch try ShellInit.installHook(shell) {
+            case .alreadyInstalled: say("  already there")
+            case .installed: say("  added; open a new terminal to use it")
+            case .replacedLegacy: say("  replaced the older acc line; open a new terminal to use it")
+            }
+        }
+    } else {
+        say("\nUnknown shell \(environment["SHELL"] ?? "?"). Add `eval \"$(acc shell-init zsh|bash)\"` or `acc shell-init fish | source` yourself.")
+    }
+
+    if let primary = registry.primary(for: .claude) {
+        let settings = primary.folder() + "/settings.json"
+        let command = (which("acc") ?? CommandLine.arguments[0]) + " statusline"
+        if ask("\nShow each Claude Code session's account and usage in its status line?") {
+            switch try StatusLineSetup.install(settings: settings, command: command) {
+            case .alreadyInstalled: say("  already on")
+            case .installed: say("  on (applies to every Claude account sharing \(primary.id)'s settings)")
+            case .otherStatusLine(let existing): say("  left alone: you already use `\(existing)`")
+            }
+        }
+    }
+
+    let drifting = registry.accounts.filter { a in
+        registry.primary(for: a.tool).map { $0.id != a.id && !Shared.issues(a, primary: $0).isEmpty } ?? false
+    }
+    if !drifting.isEmpty, ask("\n\(drifting.count) account\(drifting.count == 1 ? "" : "s") don't share config (rules, settings, skills, MCP servers) with their tool's primary. Share it?") {
+        for account in drifting {
+            let primary = registry.primary(for: account.tool)!
+            let changes = try Shared.sync(account, primary: primary, runner: try? Runner.locate(account.tool), prune: false)
+            if !changes.isEmpty { say("  \(account.id): \(changes.joined(separator: ", "))") }
+        }
+    }
+
+    if let app = appPath(), ask("\nOpen the Consolidatex menu bar app?") {
+        let open = Process()
+        open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        open.arguments = [app]
+        try? open.run()
+        open.waitUntilExit()
+    }
+
+    say("\nDone. In a new terminal:")
+    say("  acc            pick accounts")
+    say("  claude / codex / opencode   start on the current account")
+    say("  acc doctor     check everything")
+}
+
+// MARK: commands
 
 func main() throws {
     var args = Array(CommandLine.arguments.dropFirst())
+    _ = flag("--yes", in: &args)
     let command = args.isEmpty ? nil : args.removeFirst()
 
     switch command {
     case nil:
         let registry = try store.load()
         if isTTY {
-            if let id = try pick(registry) { try switchTo(id) }
+            if let id = try pick(registry, tool: nil) { try switchTo(id) }
         } else {
-            rows(registry).forEach(say)
+            rows(registry).forEach { say($0.1) }
         }
 
     case "ls", "list":
+        let asJSON = flag("--json", in: &args)
         let registry = try store.load()
-        if flag("--json", in: &args) { say(try json(registry)) } else { rows(registry).forEach(say) }
+        if asJSON { say(try json(registry)) } else { rows(registry, tool: args.first.flatMap(tool(named:))).forEach { say($0.1) } }
 
     case "current":
-        let account = try store.load().currentAccount
-        if flag("--json", in: &args) { say(try json(account)) } else { say(describe(account)) }
-
-    case "auto":
+        let asJSON = flag("--json", in: &args)
         let registry = try store.load()
-        guard let best = registry.byHeadroom(usageStore.all(registry)).first else { throw AccError.usage("no accounts") }
-        try switchTo(best.id)
-        say("  \(UsageFormat.summary(usageStore.load(best.id)))")
-
-    case "continue":
-        let session = try option("--session", in: &args)
-        try continueSession(args.first, sessionID: session)
-
-    case "sync":
-        let prune = flag("--prune", in: &args)
-        let registry = try store.load()
-        let claude = try Claude.locate()
-        var changed = false
-        for account in registry.accounts where account.id != registry.primary.id {
-            let changes = try Shared.sync(account, primary: registry.primary, claude: claude, prune: prune)
-            if !changes.isEmpty { say("\(account.id): \(changes.joined(separator: ", "))"); changed = true }
-            for issue in Shared.issues(account, primary: registry.primary) { say("! \(account.id): \(issue)") }
-        }
-        if !changed { say("everything already matches \(registry.primary.id)") }
-
-    case "statusline":
-        statusLine()
-
-    case "ui":
-        let open = Process()
-        open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        open.arguments = ["consolidatex://manage"]
-        try open.run()
-        open.waitUntilExit()
-        if open.terminationStatus != 0 {
-            throw AccError.system("could not open Consolidatex; is it installed in ~/Applications? (run script/install)")
-        }
+        let accounts = (args.first.flatMap(tool(named:)).map { [$0] } ?? registry.tools).compactMap(registry.current(for:))
+        if asJSON { say(try json(accounts)) } else { accounts.forEach { say(describe($0)) } }
 
     case "use":
         guard let ref = args.first else { throw AccError.usage("usage: acc use <account>") }
         try switchTo(ref)
 
-    case "dir":
+    case "auto":
         let registry = try store.load()
-        let account = try args.first.map(registry.resolve) ?? registry.currentAccount
-        say(account.resolvedConfigDir() ?? "")
+        let usage = usages.all(registry)
+        let tools = args.first.flatMap(tool(named:)).map { [$0] } ?? registry.tools.filter { t in registry.accounts(for: t).contains { usage[$0.id] != nil } }
+        guard !tools.isEmpty else { throw AccError.usage("no usage recorded yet; use your accounts for a while first") }
+        for t in tools {
+            if let best = registry.byHeadroom(t, usage).first {
+                try switchTo(best.id)
+                say("  \(UsageFormat.summary(usage[best.id], tool: t))")
+            }
+        }
+
+    case "continue":
+        let session = try option("--session", in: &args)
+        try continueSession(args.first, sessionID: session)
+
+    case "launch":
+        guard let name = args.first, let t = tool(named: name) else { throw AccError.usage("usage: acc launch <tool> [--] [args]") }
+        args.removeFirst()
+        if args.first == "--" { args.removeFirst() }
+        try launch(t, args)
 
     case "run":
-        guard !args.isEmpty else { throw AccError.usage("usage: acc run <account> [--] [claude args]") }
+        guard !args.isEmpty else { throw AccError.usage("usage: acc run <account> [--] [args]") }
         let account = try store.load().resolve(args.removeFirst())
         if args.first == "--" { args.removeFirst() }
-        throw try Claude.locate().exec(account: account, arguments: args)
+        throw try Runner.locate(account.tool).exec(account: account, arguments: args)
+
+    case "dir":
+        let registry = try store.load()
+        let account = try args.first.map { try registry.resolve($0) } ?? registry.current(for: .claude)
+        say(account?.resolvedConfigDir() ?? "")
 
     case "add":
-        let label = try option("--label", in: &args)
+        let id = try option("--id", in: &args)
         let dir = try option("--dir", in: &args)
-        guard args.count == 1, let id = args.first else {
-            throw AccError.usage("usage: acc add <id> [--label <label>] [--dir <config dir>]")
+        guard let name = args.first, let t = tool(named: name) else {
+            throw AccError.usage("usage: acc add <claude|codex|opencode> [<name>] [--id <id>] [--dir <folder>]")
         }
-        guard Registry.isValidID(id), !Registry.reservedIDs.contains(id) else { throw AccError.invalidID(id) }
-        let existing = store.exists ? try store.load() : nil
-        if existing?.account(id: id) != nil { throw AccError.duplicateID(id) }
-        var account = Account(id: id, label: label ?? id, configDir: dir ?? "~/.claude-\(id)")
-        if let path = account.resolvedConfigDir() {
-            try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+        args.removeFirst()
+        var registry = try loadOrEmpty()
+        let label = args.isEmpty ? "\(t.spec.name) \(registry.accounts(for: t).count + 1)" : args.joined(separator: " ")
+        var account = registry.newAccount(tool: t, label: label, id: id)
+        if let dir { account.configDir = dir }
+        var next = registry
+        try next.add(account)
+        let runner = try Runner.locate(t)
+        try runner.prepare(account)
+        if let primary = registry.primary(for: t) {
+            for change in try Shared.sync(account, primary: primary, runner: runner, prune: false) { say("  \(change)") }
         }
-        let claude = try Claude.locate()
-        if let registry = existing {
-            for change in try Shared.sync(account, primary: registry.primary, claude: claude, prune: false) { say("  \(change)") }
-        }
-        account.email = try logIn(account, claude: claude).email
-        if var registry = existing {
-            try registry.add(account)
-            try store.save(registry)
-        } else {
-            try store.save(Registry(current: id, accounts: [account]))
-        }
+        account.email = try ensureLoggedIn(account, runner: runner).email
+        try registry.add(account)
+        try store.save(registry)
         say("added \(describe(account))")
 
     case "login":
         guard let ref = args.first else { throw AccError.usage("usage: acc login <account>") }
         let account = try store.load().resolve(ref)
-        let claude = try Claude.locate()
-        let code = try claude.run(account: account, arguments: ["auth", "login"])
-        guard code == 0 else { throw AccError.claudeFailed("`claude auth login` exited \(code)") }
-        let status = try claude.authStatus(for: account)
-        guard status.loggedIn else { throw AccError.claudeFailed("still not logged in") }
+        let runner = try Runner.locate(account.tool)
+        if let hint = account.tool.spec.loginHint { say(hint) }
+        let code = try runner.run(account: account, arguments: account.tool.spec.loginArguments)
+        guard code == 0 else { throw AccError.toolFailed(runner.spec.command, "login exited \(code)") }
+        let status = try runner.authStatus(for: account)
+        guard status.loggedIn else { throw AccError.toolFailed(runner.spec.command, "still not logged in") }
         try store.update { $0.recordEmail(status.email, for: account.id) }
-        say("logged in \(account.id) as \(status.email ?? "unknown")")
+        say("logged in \(account.id)" + (status.email.map { " as \($0)" } ?? ""))
 
     case "rename":
-        guard args.count >= 2 else { throw AccError.usage("usage: acc rename <account> <label>") }
+        guard args.count >= 2 else { throw AccError.usage("usage: acc rename <account> <name>") }
         let ref = args.removeFirst()
         let label = args.joined(separator: " ")
         try store.update { r in try r.rename(r.resolve(ref).id, to: label) }
@@ -362,18 +478,59 @@ func main() throws {
             try r.remove(account.id)
             removed = account
         }
-        if let removed {
-            say("removed \(removed.id); its config dir \(removed.configDir ?? "~/.claude") was left in place")
-        }
+        if let removed { say("removed \(removed.id); its folder \(removed.folder()) was left in place") }
 
     case "doctor":
         if try !doctor(fix: flag("--fix", in: &args)) { exit(1) }
+
+    case "sync":
+        let prune = flag("--prune", in: &args)
+        let registry = try store.load()
+        var changed = false
+        for account in registry.ordered {
+            guard let primary = registry.primary(for: account.tool), primary.id != account.id else { continue }
+            let changes = try Shared.sync(account, primary: primary, runner: try? Runner.locate(account.tool), prune: prune)
+            if !changes.isEmpty { say("\(account.id): \(changes.joined(separator: ", "))"); changed = true }
+            for issue in Shared.issues(account, primary: primary) { say("! \(account.id): \(issue)") }
+        }
+        if !changed { say("everything already shares its primary's config") }
+
+    case "setup":
+        try setup()
+
+    case "shell-init":
+        guard let name = args.first, let shell = ShellInit.Shell(rawValue: name) else {
+            throw AccError.usage("usage: acc shell-init zsh|bash|fish")
+        }
+        print(ShellInit.script(for: shell), terminator: "")
+
+    case "statusline":
+        statusLine()
+
+    case "ui":
+        let open = Process()
+        open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        open.arguments = ["consolidatex://manage"]
+        try open.run()
+        open.waitUntilExit()
+        if open.terminationStatus != 0 { throw AccError.system("could not open Consolidatex; is the app installed?") }
 
     case "version", "--version":
         say("acc \(version)")
 
     case "help", "-h", "--help":
         say(usage)
+
+    case let word? where tool(named: word) != nil:
+        let t = tool(named: word)!
+        let registry = try store.load()
+        if let ref = args.first {
+            try switchTo(ref, tool: t)
+        } else if isTTY {
+            if let id = try pick(registry, tool: t) { try switchTo(id) }
+        } else {
+            rows(registry, tool: t).forEach { say($0.1) }
+        }
 
     case let ref?:
         if ref.hasPrefix("-") { throw AccError.usage(usage) }

@@ -1,59 +1,83 @@
 import Foundation
 
-/// One Claude Code subscription. `configDir == nil` means Claude Code's default
-/// (~/.claude with ~/.claude.json), which must run with CLAUDE_CONFIG_DIR unset:
-/// pointing CLAUDE_CONFIG_DIR at ~/.claude selects a different config file and keychain entry.
-public struct Account: Codable, Equatable, Sendable {
+/// One subscription of one tool. `configDir == nil` means the tool's default folder, which
+/// must run with the tool's variable unset: for Claude Code, pointing CLAUDE_CONFIG_DIR at
+/// ~/.claude selects a different config file and keychain entry than leaving it unset.
+public struct Account: Codable, Equatable, Identifiable, Sendable {
     public var id: String
+    public var tool: Tool
     public var label: String
     public var configDir: String?
     public var email: String?
 
-    public init(id: String, label: String, configDir: String?, email: String? = nil) {
+    public init(id: String, tool: Tool, label: String, configDir: String?, email: String? = nil) {
         self.id = id
+        self.tool = tool
         self.label = label
         self.configDir = configDir
         self.email = email
     }
 
-    /// The value for CLAUDE_CONFIG_DIR, or nil to leave it unset.
+    /// The value for the tool's variable, or nil to leave it unset.
     public func resolvedConfigDir(home: String = userHome()) -> String? {
         guard let configDir else { return nil }
         if configDir == "~" { return home }
         if configDir.hasPrefix("~/") { return home + configDir.dropFirst(1) }
         return configDir
     }
+
+    /// The folder holding this account's files, default or not.
+    public func folder(home: String = userHome()) -> String {
+        resolvedConfigDir(home: home) ?? home + "/" + tool.spec.defaultDir
+    }
 }
 
 public struct Registry: Codable, Equatable, Sendable {
-    public static let currentVersion = 1
-    /// Words `acc` treats as subcommands, so they can never be account ids.
-    public static let reservedIDs: Set<String> = [
-        "add", "auto", "continue", "current", "dir", "doctor", "help", "login", "ls", "list", "rename", "rm", "run",
-        "statusline", "sync", "ui", "use", "version",
-    ]
+    public static let currentVersion = 2
+    /// Words acc treats as subcommands or tool names, so they can never be account ids.
+    public static let reservedIDs: Set<String> = Set(Tool.allCases.map(\.rawValue) + [
+        "add", "auto", "continue", "current", "dir", "doctor", "help", "launch", "login", "ls", "list",
+        "rename", "rm", "run", "setup", "shell-init", "statusline", "sync", "ui", "use", "version", "kiro",
+    ])
 
     public var version: Int
-    public var current: String
+    /// The account new sessions of each tool use.
+    public var current: [Tool: String]
     public var accounts: [Account]
 
-    public init(current: String, accounts: [Account]) {
+    public init(current: [Tool: String], accounts: [Account]) {
         self.version = Registry.currentVersion
         self.current = current
         self.accounts = accounts
     }
 
-    public var currentAccount: Account {
-        // validate() guarantees `current` names an account.
-        accounts.first { $0.id == current }!
-    }
+    public static let empty = Registry(current: [:], accounts: [])
 
     public func account(id: String) -> Account? { accounts.first { $0.id == id } }
+
+    public func accounts(for tool: Tool) -> [Account] { accounts.filter { $0.tool == tool } }
+
+    public var tools: [Tool] { Tool.allCases.filter { t in accounts.contains { $0.tool == t } } }
+
+    public func current(for tool: Tool) -> Account? { current[tool].flatMap(account(id:)) }
+
+    public func isCurrent(_ account: Account) -> Bool { current[account.tool] == account.id }
+
+    /// Display order: grouped by tool, in the user's order within each tool. Positions (1-9 shortcuts) follow it.
+    public var ordered: [Account] {
+        accounts.enumerated().sorted { l, r in
+            l.element.tool != r.element.tool ? l.element.tool < r.element.tool : l.offset < r.offset
+        }.map(\.element)
+    }
+
+    /// The account whose config the others of its tool share: the one on the default folder, else the first.
+    public func primary(for tool: Tool) -> Account? {
+        accounts.first { $0.tool == tool && $0.configDir == nil } ?? accounts.first { $0.tool == tool }
+    }
 
     public func validate() throws {
         guard version == Registry.currentVersion else { throw AccError.unsupportedVersion(version) }
         var problems: [String] = []
-        if accounts.isEmpty { problems.append("no accounts") }
         var seen = Set<String>()
         for a in accounts {
             if !Registry.isValidID(a.id) {
@@ -65,11 +89,18 @@ public struct Registry: Codable, Equatable, Sendable {
             if a.label.trimmingCharacters(in: .whitespaces).isEmpty { problems.append("account '\(a.id)' has an empty label") }
             if let dir = a.configDir, dir.isEmpty { problems.append("account '\(a.id)' has an empty configDir (use null for the default)") }
         }
-        if accounts.filter({ $0.configDir == nil }).count > 1 {
-            problems.append("more than one account uses the default config dir (configDir: null)")
-        }
-        if !accounts.contains(where: { $0.id == current }) {
-            problems.append("current account '\(current)' is not in the list")
+        for tool in Tool.allCases {
+            if accounts.filter({ $0.tool == tool && $0.configDir == nil }).count > 1 {
+                problems.append("more than one \(tool.spec.name) account uses the default folder (configDir: null)")
+            }
+            let hasAccounts = accounts.contains { $0.tool == tool }
+            if let id = current[tool] {
+                if account(id: id)?.tool != tool {
+                    problems.append("current \(tool.spec.name) account '\(id)' is not a \(tool.spec.name) account in the list")
+                }
+            } else if hasAccounts {
+                problems.append("no current \(tool.spec.name) account")
+            }
         }
         if !problems.isEmpty { throw AccError.invalidRegistry(problems) }
     }
@@ -78,16 +109,17 @@ public struct Registry: Codable, Equatable, Sendable {
         id.range(of: #"^[a-z][a-z0-9-]*$"#, options: .regularExpression) != nil
     }
 
-    /// Finds an account from what a person types: its 1-based position, its id,
-    /// or a fragment of its id, label or email that matches exactly one account.
-    public func resolve(_ ref: String) throws -> Account {
+    /// Finds an account from what a person types: its position in `ordered` (1-based), its id,
+    /// or a fragment of its id, label or email that matches exactly one account (of `tool`, if given).
+    public func resolve(_ ref: String, tool: Tool? = nil) throws -> Account {
         let q = ref.trimmingCharacters(in: .whitespaces).lowercased()
+        let pool = ordered.filter { tool == nil || $0.tool == tool }
         if let n = Int(q) {
-            guard accounts.indices.contains(n - 1) else { throw AccError.noMatch(ref) }
-            return accounts[n - 1]
+            guard pool.indices.contains(n - 1) else { throw AccError.noMatch(ref) }
+            return pool[n - 1]
         }
-        if let exact = accounts.first(where: { $0.id == q || $0.label.lowercased() == q }) { return exact }
-        let hits = accounts.filter { a in
+        if let exact = pool.first(where: { $0.id == q }) ?? pool.first(where: { $0.label.lowercased() == q }) { return exact }
+        let hits = pool.filter { a in
             [a.id, a.label, a.email ?? ""].contains { !q.isEmpty && $0.lowercased().contains(q) }
         }
         switch hits.count {
@@ -96,6 +128,21 @@ public struct Registry: Codable, Equatable, Sendable {
         default: throw AccError.ambiguous(ref, hits.map(\.id))
         }
     }
+
+    /// The account a running tool belongs to, from the value of its variable (nil or empty = default).
+    public func account(for tool: Tool, configDir dir: String?, home: String = userHome()) -> Account? {
+        guard let dir, !dir.isEmpty else { return accounts.first { $0.tool == tool && $0.configDir == nil } }
+        let target = canonical(dir)
+        return accounts.first { a in a.tool == tool && a.resolvedConfigDir(home: home).map(canonical) == target }
+    }
 }
 
-extension Account: Identifiable {}
+func canonical(_ path: String) -> String {
+    URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+}
+
+/// $HOME, as the tools resolve it, falling back to the account's home directory.
+public func userHome() -> String {
+    if let home = ProcessInfo.processInfo.environment["HOME"], !home.isEmpty { return home }
+    return NSHomeDirectory()
+}
