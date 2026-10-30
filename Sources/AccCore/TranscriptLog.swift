@@ -51,25 +51,22 @@ public actor TranscriptLog {
         var responses: [String: Response] = [:]
     }
 
-    private let projects: URL
-    private var files: [URL: FileState] = [:]
+    private let projects: String
+    private var files: [String: FileState] = [:]
 
     public init(folder: String) {
-        projects = URL(fileURLWithPath: folder + "/projects")
+        projects = folder + "/projects"
     }
 
     public func activity(at now: Date, over window: TimeInterval = 5 * 3600) -> Activity {
         let cutoff = now - window
-        var recent: [URL: FileState] = [:]
+        var recent: [String: FileState] = [:]
         var lastWrite: Date?
-        let files = FileManager.default.enumerator(at: projects, includingPropertiesForKeys: [.contentModificationDateKey])
-        while let file = files?.nextObject() as? URL {
-            guard file.pathExtension == "jsonl",
-                  let modified = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-            else { continue }
+        Self.transcripts(in: projects) { modified, path in
             lastWrite = max(lastWrite ?? modified, modified)
-            guard modified > cutoff else { continue }
-            recent[file] = Self.readAppended(file, after: self.files[file] ?? FileState(), cutoff: cutoff)
+            guard modified > cutoff else { return }
+            let file = path()
+            recent[file] = Self.readAppended(URL(fileURLWithPath: file), after: self.files[file] ?? FileState(), cutoff: cutoff)
         }
         self.files = recent
         var activity = Activity(lastWrite: lastWrite)
@@ -91,7 +88,7 @@ public actor TranscriptLog {
     @discardableResult
     private func spending(after since: Date, until: Date, _ add: (Origin, Int) -> Void) -> Int {
         var seen = Set<String>()
-        for file in files.keys.sorted(by: { $0.path < $1.path }) {
+        for file in files.keys.sorted() {
             guard let state = files[file] else { continue }
             for (key, response) in state.responses where response.at > since && response.at <= until && seen.insert(key).inserted {
                 add(state.origin ?? .otherApp, response.outputTokens)
@@ -99,6 +96,38 @@ public actor TranscriptLog {
         }
         return seen.count
     }
+
+    /// Calls `visit` with the modification time of every .jsonl file under `directory`, and a way to
+    /// get its path. The walk runs every refresh over thousands of files, so it reads names straight
+    /// from the directory, stats only transcripts, and makes a path only for a file that asks for it.
+    static func transcripts(in directory: String, _ visit: (Date, () -> String) -> Void) {
+        guard let dir = opendir(directory) else { return }
+        defer { closedir(dir) }
+        var folders: [String] = []
+        while let entry = readdir(dir) {
+            withUnsafePointer(to: &entry.pointee.d_name) { tuple in
+                tuple.withMemoryRebound(to: CChar.self, capacity: MemoryLayout.size(ofValue: tuple.pointee)) { cName in
+                    let name = UnsafeRawBufferPointer(start: cName, count: Int(entry.pointee.d_namlen))
+                    let path = { directory + "/" + String(decoding: name, as: UTF8.self) }
+                    let isTranscript = name.count > jsonl.count && name.suffix(jsonl.count).elementsEqual(jsonl)
+                    var type = Int32(entry.pointee.d_type)
+                    var info = stat()
+                    if isTranscript || type == DT_UNKNOWN {
+                        guard fstatat(dirfd(dir), cName, &info, 0) == 0 else { return }
+                        if type == DT_UNKNOWN { type = info.st_mode & S_IFMT == S_IFDIR ? DT_DIR : DT_REG }
+                    }
+                    if type == DT_DIR {
+                        if !name.elementsEqual(dot), !name.elementsEqual(dotDot) { folders.append(path()) }
+                    } else if isTranscript {
+                        visit(Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1e9), path)
+                    }
+                }
+            }
+        }
+        for folder in folders { transcripts(in: folder, visit) }
+    }
+
+    private static let dot = Array(".".utf8), dotDot = Array("..".utf8), jsonl = Array(".jsonl".utf8)
 
     /// A file shorter than what was read before has been rewritten, so it's read again from the start.
     private static func readAppended(_ file: URL, after previous: FileState, cutoff: Date) -> FileState {
