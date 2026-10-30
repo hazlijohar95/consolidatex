@@ -50,6 +50,8 @@ struct ReportView: View {
             }
             Text(report.cappedHours >= 0.5 ? "\(Int(report.cappedHours.rounded()))h at limit" : "never at limit")
                 .monospacedDigit().foregroundStyle(report.cappedHours >= 1 ? Theme.bad : .secondary)
+            Text(UsageFormat.shares(report.appTokens, limit: 3) ?? "")
+                .font(.callout).foregroundStyle(.secondary)
             Text(report.note.map { $0.prefix(1).uppercased() + $0.dropFirst() } ?? "")
                 .font(.callout).foregroundStyle(Theme.warn)
         }

@@ -590,3 +590,132 @@ func write(_ text: String, to path: String) {
         #expect(Registry.reservedIDs.contains("report"))
     }
 }
+
+@Suite struct Running {
+    /// argc, path, padding, arguments, then the environment, as the kernel lays it out.
+    func procArgs(_ arguments: [String], _ environment: [String]) -> [UInt8] {
+        var bytes = withUnsafeBytes(of: Int32(arguments.count)) { Array($0) }
+        bytes += Array("/usr/local/bin/claude".utf8) + [0, 0, 0]
+        for s in arguments + environment { bytes += Array(s.utf8) + [0] }
+        return bytes + [0]
+    }
+
+    @Test func readsOnlyTheVariablesAskedFor() {
+        let bytes = procArgs(["claude", "--resume", "x"], ["HOME=/h", "CLAUDE_CONFIG_DIR=/h/.claude-w", "CLAUDE_CODE_OAUTH_TOKEN=secret"])
+        let facts = bytes.withUnsafeBytes { RunningSessions.facts(fromProcArgs: $0, variables: ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_ACCOUNT_UUID"]) }
+        #expect(facts == RunningSessions.Facts(variables: ["CLAUDE_CONFIG_DIR": "/h/.claude-w"], flagged: false))
+    }
+
+    @Test func anEmptyArgumentIsNotMistakenForTheEnvironment() {
+        let bytes = procArgs(["claude", "--setting-sources", "", "-p", ""], ["CLAUDE_CONFIG_DIR=/h/.claude-w", "HOME=/h"])
+        let facts = bytes.withUnsafeBytes { RunningSessions.facts(fromProcArgs: $0, variables: ["CLAUDE_CONFIG_DIR"]) }
+        #expect(facts.variables == ["CLAUDE_CONFIG_DIR": "/h/.claude-w"])
+    }
+
+    @Test func aLoginWithoutItsOrganizationFindsTheOnlyAccountWithThatUser() {
+        let index = RunningSessions.loginIndex([
+            "team": .init(account: "u1", organization: "org-team"), "personal": .init(account: "u1", organization: "org-me"),
+            "solo": .init(account: "u2", organization: "org-x"),
+        ])
+        #expect(index[.init(account: "u1", organization: "org-team")] == "team")
+        #expect(index[.init(account: "u2", organization: nil)] == "solo")
+        // Two accounts share u1, so without the organization there is no telling which.
+        #expect(index[.init(account: "u1", organization: nil)] == nil)
+    }
+
+    @Test func spotsTheChromeBridge() {
+        let bytes = procArgs(["claude", "--chrome-native-host"], [])
+        #expect(bytes.withUnsafeBytes { RunningSessions.facts(fromProcArgs: $0, variables: [], flags: ToolSpec.claude.ignoredArguments) }.flagged)
+    }
+
+    @Test func namesKnownAppsByBundleID() {
+        #expect(RunningSessions.knownApps.first { "com.superlogical.rex.server".hasPrefix($0.idPrefix) }?.name == "Rex")
+    }
+
+    /// A real process named claude, on an account folder, found in the real process table.
+    @Test func findsARunningSessionAndItsAccount() throws {
+        let home = tempHome()
+        let fake = home + "/bin/claude"
+        try FileManager.default.createDirectory(atPath: home + "/bin", withIntermediateDirectories: true)
+        try FileManager.default.copyItem(atPath: "/bin/sleep", toPath: fake)
+        let session = Process(), bridge = Process(), desktop = Process()
+        let runs: [(Process, [String], [String: String])] = [
+            // An environment larger than the scan's first buffer, which has to grow to read it.
+            (session, ["30"], ["PADDING": String(repeating: "x", count: 60_000), "CLAUDE_CONFIG_DIR": home + "/.claude-w"]),
+            (bridge, ["30", "--chrome-native-host"], ["CLAUDE_CONFIG_DIR": home + "/.claude-w"]),
+            // Started the way Claude desktop starts sessions: a login, no folder.
+            (desktop, ["30"], ["CLAUDE_CODE_ACCOUNT_UUID": "user-1", "CLAUDE_CODE_ORGANIZATION_UUID": "org-team"]),
+        ]
+        for (process, arguments, environment) in runs {
+            process.executableURL = URL(fileURLWithPath: fake)
+            process.arguments = arguments
+            process.environment = environment
+            try process.run()
+        }
+        defer { runs.forEach { $0.0.terminate() } }
+        let registry = Registry(current: [.claude: "w"], accounts: [
+            Account(id: "w", tool: .claude, label: "W", configDir: "~/.claude-w"),
+            Account(id: "team", tool: .claude, label: "Team", configDir: "~/.claude-team"),
+        ])
+        // One person in two organizations: only the organization tells the accounts apart.
+        let logins = ["w": Identity.Login(account: "user-1", organization: "org-personal"), "team": Identity.Login(account: "user-1", organization: "org-team")]
+        let ours = Set(runs.map { $0.0.processIdentifier })
+        let found = RunningSessions.scan(registry, logins: { logins }, home: home)
+            .filter { ours.contains($0.pid) }
+        #expect(found.map(\.pid) == [session.processIdentifier, desktop.processIdentifier].sorted())
+        #expect(Dictionary(uniqueKeysWithValues: found.map { ($0.pid, $0.accountID) }) == [session.processIdentifier: "w", desktop.processIdentifier: "team"])
+    }
+}
+
+@Suite struct Origins {
+    @Test func whereSessionsRan() {
+        #expect(Origin.of(entrypoint: "claude-desktop", cwd: "/x") == .claudeDesktop)
+        #expect(Origin.of(entrypoint: "cli", cwd: "/Users/me/.t3/worktrees/a") == .terminal)
+        #expect(Origin.of(entrypoint: "sdk-ts", cwd: "/Users/me/.t3/worktrees/a") == .t3Code)
+        #expect(Origin.of(entrypoint: "sdk-cli", cwd: "/tmp/t3code-claude-title-x") == .t3Code)
+        #expect(Origin.of(entrypoint: "sdk-ts", cwd: "/work") == .otherApp)
+    }
+
+    @Test func tokensAreSplitByOriginOneOriginPerTranscript() async {
+        let home = tempHome(), now = Date()
+        func line(_ id: String, _ tokens: Int, _ entry: String, _ cwd: String, ago: TimeInterval = 60) -> String {
+            #"{"type":"assistant","timestamp":"\#(ISO8601DateFormatter().string(from: now - ago))","requestId":"r\#(id)","entrypoint":"\#(entry)","cwd":"\#(cwd)","message":{"id":"\#(id)","usage":{"output_tokens":\#(tokens)}}}"#
+        }
+        write(line("a", 30, "cli", "/w") + "\n", to: home + "/projects/p/terminal.jsonl")
+        write(line("b", 60, "sdk-ts", "/u/.t3/worktrees/x", ago: 3600) + "\n" + line("b2", 5, "sdk-ts", "/u/.t3/worktrees/x") + "\n", to: home + "/projects/q/t3.jsonl")
+        write(line("c", 10, "claude-desktop", "/w") + "\n", to: home + "/projects/r/desktop.jsonl")
+        let log = TranscriptLog(folder: home)
+        let activity = await log.activity(at: now)
+        #expect(activity.byOrigin == [.terminal: 30, .t3Code: 65, .claudeDesktop: 10])
+        #expect(activity.outputTokens == 105)
+        // Since 30 minutes ago: the hour-old T3 reply is left out.
+        #expect(await log.tokens(since: now - 1800, until: now) == [.terminal: 30, .t3Code: 5, .claudeDesktop: 10])
+        // Up to 2 minutes ago: the replies from a minute ago are the next sample's.
+        #expect(await log.tokens(since: now - 1800, until: now - 120) == [:])
+    }
+
+    @Test func aReplyCopiedIntoAnotherTranscriptCountsOnce() async {
+        let home = tempHome(), now = Date()
+        let reply = #"{"type":"assistant","timestamp":"\#(ISO8601DateFormatter().string(from: now - 60))","requestId":"r1","entrypoint":"cli","cwd":"/w","message":{"id":"m1","usage":{"output_tokens":40}}}"#
+        write(reply + "\n", to: home + "/projects/a/original.jsonl")
+        write(reply + "\n", to: home + "/projects/b/resumed.jsonl")
+        let log = TranscriptLog(folder: home)
+        #expect(await log.activity(at: now).outputTokens == 40)
+        #expect(await log.tokens(since: now - 600, until: now) == [.terminal: 40])
+    }
+
+    @Test func weekSharesAddUpTheSamples() {
+        let samples = (0..<4).map { UsageHistory.Sample(at: t0 - Double($0) * 900, load: 10, week: 10, apps: .init([.t3Code: 30, .terminal: 10])) }
+        let report = WeekReport(account: sample.account(id: "cto")!, samples: samples, current: nil, at: t0)
+        #expect(report.appTokens == [.t3Code: 120, .terminal: 40])
+        #expect(UsageFormat.shares(report.appTokens) == "T3 Code 75% · Terminal 25%")
+        #expect(UsageFormat.shares([.claudeDesktop: 1, .terminal: 1]) == "Terminal 50% · Claude desktop 50%")
+    }
+
+    @Test func samplesWrittenBeforeAppTokensStillLoad() throws {
+        let history = UsageHistory(usageStore: UsageStore(registryStore: tempStore()))
+        try FileManager.default.createDirectory(at: history.directory, withIntermediateDirectories: true)
+        try Data(#"{"apps":{"t3Code":7},"at":1800000000,"load":3}"#.utf8).write(to: history.directory.appendingPathComponent("a.jsonl"))
+        #expect(history.samples(for: "a", since: .distantPast).first?.apps?[.t3Code] == 7)
+    }
+}

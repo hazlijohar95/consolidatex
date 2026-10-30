@@ -61,7 +61,7 @@ If you were in a conversation on that account, the notification offers to contin
 
 ## See your week
 
-Open **Last 7 Days…** from the panel's **⋯** menu, or run `acc report`. For each account it shows how much of its weekly limit you used and how long it sat at a limit. It also points out accounts that were mostly idle and accounts that kept hitting their limit. The app records usage every 15 minutes while it runs, so the report fills in over the first week.
+Open **Last 7 Days…** from the panel's **⋯** menu, or run `acc report`. For each account it shows how much of its weekly limit you used, how long it sat at a limit, and which apps used it. It also points out accounts that were mostly idle and accounts that kept hitting their limit. The app records usage every 15 minutes while it runs, so the report fills in over the first week.
 
 ## Watch your usage
 
@@ -71,6 +71,8 @@ The menu bar shows the usage of the account you're working in. Click it for the 
 - **Next session** marks the account new sessions start on. **Most tokens left** marks the account with the most of its limits unused.
 - A yellow line warns when an account will hit a limit before it resets, at its current pace.
 - You get a notification when a capped account resets.
+- Each account shows the icons of the apps running sessions on it now, such as Rex, T3 Code or Claude desktop, with a count when there's more than one.
+- Click an account to see which apps are running on it and how its last 5 hours of tokens split between them, such as "T3 Code 68% · Terminal 22% · Claude desktop 10%". For an account that isn't the one new sessions start on, the same click offers the switch.
 - Right-click an account to rename it, log it in again, or show its folder in Finder.
 
 New account folders show up in the panel by themselves. `acc rm` keeps one out for good.
@@ -88,7 +90,7 @@ Where the numbers come from, by tool:
 | `acc` | Pick an account with fzf. Press 1–9 to jump. |
 | `acc <name>`, `acc codex <name>` | Make it the account new sessions start on. |
 | `claude @<name> …` | Run one session on another account. |
-| `acc ls [--json]` | List accounts with their last known usage. |
+| `acc ls [--json]` | List accounts with their last known usage and the apps running on each now. |
 | `acc auto` | Switch each tool to its account with the most tokens left. |
 | `acc report` | Show the last 7 days: weekly use and hours at a limit, per account. |
 | `acc continue [<name>]` | Move this folder's latest conversation to another account and resume it there. Claude Code and Codex only. |
@@ -107,6 +109,7 @@ Each tool logs itself in and keeps its own credentials. acc never copies them.
 - To name accounts, acc reads the email and plan from Claude Code's `.claude.json` and from the ID token in Codex's `auth.json`.
 - The `acc` command and the status line make no network calls.
 - The menu bar app asks Codex for its usage through `codex app-server`. Codex sends that request with its own login, so no credential passes through acc.
+- To show which apps run which account, the app reads the running `claude`, `codex` and `opencode` processes. From each one's environment it takes only the variable that names its account folder, or, for Claude desktop's sessions, the account and organization IDs of its login. It never reads or keeps anything else, such as login tokens.
 - With live Claude usage on, the app sends each Claude account's login token to Anthropic's usage endpoint, the one behind Claude Code's `/usage`, and nowhere else. It is off until you turn it on.
 
 All state lives in `~/.config/acc/accounts.json`. Every change is checked before it's written and replaces the file in one step, so you can edit it by hand. `acc doctor` tells you if an edit broke it.

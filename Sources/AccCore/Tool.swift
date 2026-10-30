@@ -38,12 +38,22 @@ public struct ToolSpec: Sendable {
     public let loginHint: String?
     /// Items in the primary account's folder that every other account symlinks.
     public let sharedItems: [String]
+    /// The kernel's names for the tool's process: the file it runs, cut to 16 bytes.
+    public var processNames: [String] = []
+    /// A folder in the path of an install that runs a file named for its version (2.1.314).
+    public var versionedInstallDir: String?
+    /// Arguments that mark a process as not a session, such as Claude Code's Chrome bridge.
+    public var ignoredArguments: [String] = []
+    /// For a session started with a login instead of a folder: the variables naming that login.
+    public var loginVariables: (account: String, organization: String)?
 
     public static let claude = ToolSpec(
         tool: .claude, name: "Claude Code", command: "claude", variable: "CLAUDE_CONFIG_DIR",
         defaultDir: ".claude", newAccountPrefix: ".claude-", isolatedArguments: [],
         loginArguments: ["auth", "login"], loginNeedsTerminal: false, loginHint: nil,
-        sharedItems: ["CLAUDE.md", "settings.json", "skills", "agents", "commands", "plugins", "hooks"])
+        sharedItems: ["CLAUDE.md", "settings.json", "skills", "agents", "commands", "plugins", "hooks"],
+        processNames: ["claude"], versionedInstallDir: "/claude/versions/", ignoredArguments: ["--chrome-native-host"],
+        loginVariables: ("CLAUDE_CODE_ACCOUNT_UUID", "CLAUDE_CODE_ORGANIZATION_UUID"))
 
     // CODEX_HOME holds auth.json, config.toml, sessions and history.
     public static let codex = ToolSpec(
@@ -51,7 +61,8 @@ public struct ToolSpec: Sendable {
         defaultDir: ".codex", newAccountPrefix: ".codex-", isolatedArguments: [],
         loginArguments: ["login"], loginNeedsTerminal: false,
         loginHint: "Codex logs in with whichever ChatGPT account your browser is signed into. Use a private window or sign out of chatgpt.com first to add a different one.",
-        sharedItems: ["AGENTS.md", "config.toml", "rules", "skills", "hooks.json", "plugins"])
+        sharedItems: ["AGENTS.md", "config.toml", "rules", "skills", "hooks.json", "plugins"],
+        processNames: ["codex"])
 
     // opencode keeps credentials and sessions in $XDG_DATA_HOME/opencode/opencode.db, served by
     // one shared background server; --standalone gives the account its own private server.
@@ -59,5 +70,6 @@ public struct ToolSpec: Sendable {
         tool: .opencode, name: "opencode", command: "opencode", variable: "XDG_DATA_HOME",
         defaultDir: ".local/share", newAccountPrefix: ".opencode-", isolatedArguments: ["--standalone"],
         loginArguments: ["auth", "login"], loginNeedsTerminal: true, loginHint: nil,
-        sharedItems: [])
+        // opencode's npm package names its binary opencode.exe on every platform.
+        sharedItems: [], processNames: ["opencode", "opencode.exe"])
 }

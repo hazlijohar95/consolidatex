@@ -12,6 +12,9 @@ final class UsageMonitor: ObservableObject {
     /// Claude Code accounts' output tokens and requests over the last 5 hours.
     @Published private(set) var activity: [String: TranscriptLog.Activity] = [:]
     @Published private(set) var identities: [String: Identity] = [:]
+    /// The apps running sessions on each account now. Counts rather than processes, so a session
+    /// that's replaced by a new process (the Agent SDK starts one per query) doesn't redraw the panel.
+    @Published private(set) var running: [String: [AppCount]] = [:]
     /// Why the last live read of an account failed; shown beside its last good reading.
     @Published private(set) var problems: [String: String] = [:]
     /// A refresh someone asked for is running. Timer ticks don't set it, so they don't redraw the panel.
@@ -92,21 +95,36 @@ final class UsageMonitor: ObservableObject {
         let unread = registry.accounts.filter { rereadIdentities || !identitiesRead.contains($0.id) }
         identitiesRead.formUnion(unread.map(\.id))
         let logs = registry.accounts(for: .claude).map { ($0.id, self.logs[$0.id] ?? TranscriptLog(folder: $0.folder())) }
+        let known = identities
         self.logs = Dictionary(uniqueKeysWithValues: logs)
+        // History takes the tokens spent since each account's previous sample.
+        let sampleFrom = logs.reduce(into: [String: Date]()) { due, entry in
+            let last = sampledAt[entry.0]
+            if now.timeIntervalSince(last ?? .distantPast) >= UsageHistory.spacing { due[entry.0] = last ?? now - UsageHistory.spacing }
+        }
         Task.detached {
-            let activity = await withTaskGroup(of: (String, TranscriptLog.Activity).self) { group in
-                for (id, log) in logs { group.addTask { (id, await log.activity(at: now)) } }
-                return await group.reduce(into: [String: TranscriptLog.Activity]()) { $0[$1.0] = $1.1 }
-            }
+            // One account at a time: the first read after launch goes through every transcript of
+            // the last 5 hours, and in parallel the peaks would add up. Later reads are only new lines.
+            var activity: [String: TranscriptLog.Activity] = [:]
+            for (id, log) in logs { activity[id] = await log.activity(at: now) }
+            var spent: [String: [Origin: Int]] = [:]
+            // Up to `now`: a reply written while this read runs belongs to the next sample.
+            for (id, log) in logs { if let since = sampleFrom[id] { spent[id] = await log.tokens(since: since, until: now) } }
             let readings = usages.all(registry)
             // Claude's comes from its transcripts, which TranscriptLog has just walked.
             let active = registry.accounts.reduce(into: [String: Date]()) { $0[$1.id] = activity[$1.id]?.lastWrite ?? Sessions.lastActive($1) }
             let identities = unread.reduce(into: [String: Identity]()) { $0[$1.id] = Identity.read($1) }
+            // Claude desktop's sessions name their login, not a folder, so they find their account
+            // among the logins already read.
+            let running = Dictionary(grouping: RunningSessions.scan(registry, logins: {
+                known.merging(identities) { $1 }.compactMapValues(\.login)
+            }), by: \.accountID).mapValues(RunningSessions.byApp)
             await MainActor.run {
+                if running != self.running { self.running = running }
                 if activity != self.activity { self.activity = activity }
                 if active != self.lastActive { self.lastActive = active }
                 if !identities.isEmpty { self.identities.merge(identities) { $1 } }
-                self.update(readings, at: now)
+                self.update(readings, spent: spent, at: now)
                 self.readingLocal = false
                 if !self.fetching { self.spinning = false }
             }
@@ -147,21 +165,21 @@ final class UsageMonitor: ObservableObject {
         }
     }
 
-    private func update(_ readings: [String: Usage], at now: Date) {
+    private func update(_ readings: [String: Usage], spent: [String: [Origin: Int]], at now: Date) {
         if readings != self.readings { self.readings = readings }
         let nowCapped = Set(readings.filter { $0.value.isCapped(at: now) }.keys)
         // The first refresh after launch has nothing to compare with, so it reports no changes.
         let changes = capped.map { LimitChanges(capped: Array(nowCapped.subtracting($0)), ready: Array($0.subtracting(nowCapped))) } ?? LimitChanges()
         capped = nowCapped
-        record(readings, at: now)
+        record(readings, spent: spent, at: now)
         onRefresh?(changes, now)
     }
 
     /// A history sample per account every 15 minutes, for the weekly report.
-    private func record(_ readings: [String: Usage], at now: Date) {
+    private func record(_ readings: [String: Usage], spent: [String: [Origin: Int]], at now: Date) {
         for (id, usage) in readings where now.timeIntervalSince(sampledAt[id] ?? .distantPast) >= UsageHistory.spacing {
             sampledAt[id] = now
-            try? history.append(UsageHistory.Sample(usage, at: now), for: id)
+            try? history.append(UsageHistory.Sample(usage, at: now, tokens: spent[id] ?? [:]), for: id)
             // The app can run for months, so old samples go once a day rather than once per launch.
             if now.timeIntervalSince(prunedAt[id] ?? .distantPast) >= 86_400 {
                 prunedAt[id] = now

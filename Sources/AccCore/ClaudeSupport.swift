@@ -11,14 +11,20 @@ public enum ClaudeSupport {
     /// The login Claude Code caches in the account's state file. `organizationType` names the plan: "claude_team" → "Team".
     static func identity(_ account: Account, home: String) -> Identity? {
         struct State: Decodable {
-            struct Login: Decodable { let emailAddress: String?; let organizationType: String? }
+            struct Login: Decodable { let emailAddress: String?; let organizationType: String?; let accountUuid: String?; let organizationUuid: String? }
             let oauthAccount: Login?
         }
         guard let data = FileManager.default.contents(atPath: stateFile(account, home: home)),
               let login = (try? JSONDecoder().decode(State.self, from: data))?.oauthAccount
         else { return nil }
         let plan = login.organizationType.map { $0.replacingOccurrences(of: "claude_", with: "").capitalized }
-        return Identity(email: login.emailAddress, plan: plan)
+        return Identity(email: login.emailAddress, plan: plan,
+                        login: login.accountUuid.map { Identity.Login(account: $0, organization: login.organizationUuid) })
+    }
+
+    /// Each Claude account's login, read from its state file.
+    public static func logins(in registry: Registry, home: String = userHome()) -> [String: Identity.Login] {
+        registry.accounts(for: .claude).reduce(into: [:]) { $0[$1.id] = identity($1, home: home)?.login }
     }
 
     static func authStatus(_ runner: Runner, _ account: Account) throws -> Runner.AuthStatus {

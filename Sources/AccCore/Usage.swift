@@ -212,6 +212,27 @@ public enum UsageFormat {
         return parts.isEmpty ? "no limits reported" : parts.joined(separator: " · ")
     }
 
+    /// "T3 Code 68% · Terminal 22% · Claude desktop 10%": the largest first, ties in `Origin` order.
+    public static func shares(_ tokens: [Origin: Int], limit: Int = .max) -> String? {
+        let total = Double(tokens.values.reduce(0, +))
+        guard total > 0 else { return nil }
+        return Origin.allCases.filter { (tokens[$0] ?? 0) > 0 }
+            .sorted { tokens[$0]! > tokens[$1]! }
+            .prefix(limit)
+            .map { "\($0.name) \(Int((Double(tokens[$0]!) / total * 100).rounded()))%" }
+            .joined(separator: " · ")
+    }
+
+    /// "1.9M", "12.3K".
+    public static func tokens(_ count: Int) -> String {
+        count.formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))
+    }
+
+    /// "Rex ×2, T3 Code".
+    public static func running(_ apps: [AppCount]) -> String {
+        apps.map { $0.count > 1 ? "\($0.launcher.name) ×\($0.count)" : $0.launcher.name }.joined(separator: ", ")
+    }
+
     /// What to show for an account with no reading: opencode never reports one.
     public static func empty(tool: Tool?) -> String { tool == .opencode ? "no usage data" : "no usage yet" }
 

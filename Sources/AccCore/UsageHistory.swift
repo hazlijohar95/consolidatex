@@ -9,15 +9,52 @@ public struct UsageHistory: Sendable {
         public let load: Double
         /// The fullest weekly window's share used, for an account with a weekly limit.
         public let week: Double?
+        /// Output tokens spent since the previous sample, by where, for Claude Code accounts. Adding
+        /// these up over a week gives exact shares.
+        public let apps: AppTokens?
 
-        public init(at: Date, load: Double, week: Double?) {
+        public init(at: Date, load: Double, week: Double?, apps: AppTokens? = nil) {
             self.at = at
             self.load = load
             self.week = week
+            self.apps = apps
         }
 
-        public init(_ usage: Usage, at now: Date) {
-            self.init(at: now, load: usage.load(at: now), week: usage.windows.filter { $0.minutes >= 10_080 }.map { $0.used(at: now) }.max())
+        public init(_ usage: Usage, at now: Date, tokens: [Origin: Int] = [:]) {
+            self.init(at: now, load: usage.load(at: now), week: usage.windows.filter { $0.minutes >= 10_080 }.map { $0.used(at: now) }.max(),
+                      apps: tokens.isEmpty ? nil : AppTokens(tokens))
+        }
+    }
+
+    /// Tokens by `Origin`, as four numbers rather than a dictionary: no allocation per sample, and
+    /// only the ones that are there get written.
+    public struct AppTokens: Codable, Equatable, Sendable {
+        var terminal: Int?
+        var t3Code: Int?
+        var claudeDesktop: Int?
+        var otherApp: Int?
+
+        public init(_ tokens: [Origin: Int]) {
+            for (origin, count) in tokens { self[origin] = count }
+        }
+
+        public subscript(origin: Origin) -> Int? {
+            get {
+                switch origin {
+                case .terminal: terminal
+                case .t3Code: t3Code
+                case .claudeDesktop: claudeDesktop
+                case .otherApp: otherApp
+                }
+            }
+            set {
+                switch origin {
+                case .terminal: terminal = newValue
+                case .t3Code: t3Code = newValue
+                case .claudeDesktop: claudeDesktop = newValue
+                case .otherApp: otherApp = newValue
+                }
+            }
         }
     }
 
@@ -76,6 +113,8 @@ public struct WeekReport: Equatable, Sendable {
     public let cappedHours: Double
     /// Hours of the week the history covers. A report on two hours of history says little.
     public let coveredHours: Double
+    /// The week's output tokens by where they were spent.
+    public let appTokens: [Origin: Int]
 
     public init(account: Account, samples: [UsageHistory.Sample], current: Usage?, at now: Date) {
         self.account = account
@@ -86,6 +125,9 @@ public struct WeekReport: Equatable, Sendable {
         coveredHours = spans.map(\.1).reduce(0, +) / 3600
         let currentWeek = current.flatMap { UsageHistory.Sample($0, at: now).week }
         weekUsed = (week.compactMap(\.week) + [currentWeek].compactMap { $0 }).max()
+        appTokens = week.compactMap(\.apps).reduce(into: [:]) { all, apps in
+            for origin in Origin.allCases { if let count = apps[origin] { all[origin, default: 0] += count } }
+        }
     }
 
     /// One thing worth acting on, if anything is.

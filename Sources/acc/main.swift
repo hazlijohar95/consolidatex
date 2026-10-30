@@ -61,14 +61,20 @@ func tool(named name: String) -> Tool? { Tool.allCases.first { $0.rawValue == na
 func rows(_ registry: Registry, tool: Tool? = nil) -> [(Account, String)] {
     let shown = registry.ordered.filter { tool == nil || $0.tool == tool }
     let usage = usages.all(registry)
+    let running = Dictionary(grouping: RunningSessions.scan(registry, logins: { ClaudeSupport.logins(in: registry) }), by: \.accountID)
     let w = (id: shown.map(\.id.count).max() ?? 0, label: shown.map(\.label.count).max() ?? 0,
              email: shown.map { ($0.email ?? "").count }.max() ?? 0)
     return shown.map { a in
         let position = registry.ordered.firstIndex(of: a)! + 1
         let mark = registry.isCurrent(a) ? "●" : " "
-        let line = "\(mark) \(position)  \(pad(a.tool.rawValue, 8))  \(pad(a.id, w.id))  \(pad(a.label, w.label))  \(pad(a.email ?? "", w.email))  \(UsageFormat.summary(usage[a.id], tool: a.tool))"
+        let line = "\(mark) \(position)  \(pad(a.tool.rawValue, 8))  \(pad(a.id, w.id))  \(pad(a.label, w.label))  \(pad(a.email ?? "", w.email))  \(UsageFormat.summary(usage[a.id], tool: a.tool))" + runningNote(running[a.id] ?? [])
         return (a, line)
     }
+}
+
+/// "  · running in Rex ×2, T3 Code", or nothing.
+func runningNote(_ sessions: [RunningSession]) -> String {
+    sessions.isEmpty ? "" : "  · running in " + UsageFormat.running(RunningSessions.byApp(sessions))
 }
 
 func describe(_ a: Account) -> String {
@@ -257,7 +263,8 @@ func report() throws {
     for r in reports {
         let week = r.weekUsed.map { "week \(Int($0.rounded()))%" } ?? "no weekly limit"
         let capped = r.cappedHours >= 0.5 ? "capped \(Int(r.cappedHours.rounded()))h" : "never capped"
-        say("  \(pad(r.account.tool.rawValue, 8))  \(pad(r.account.id, width))  \(pad(week, 15))  \(pad(capped, 12))  \(r.note ?? "")")
+        let apps = UsageFormat.shares(r.appTokens, limit: 3) ?? ""
+        say("  \(pad(r.account.tool.rawValue, 8))  \(pad(r.account.id, width))  \(pad(week, 15))  \(pad(capped, 12))  \(pad(apps, 40))  \(r.note ?? "")")
     }
     let covered = reports.map(\.coveredHours).max() ?? 0
     if covered < 24 * 6 { say("\nHistory covers \(Int(covered.rounded()))h of the week so far.") }

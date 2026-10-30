@@ -133,19 +133,22 @@ struct UsagePanel: View {
     }
 }
 
-/// A row's moment of interaction: switching asks first, since it changes every terminal's next
-/// session and is easy to do by accident; renaming edits the name in place.
+/// A row's moment of interaction. Clicking opens it: what runs on the account now, where its
+/// tokens went, and, for an account that isn't the pick, the switch, which asks first because it
+/// changes every terminal's next session. Renaming edits the name in place.
 struct RowFocus: Equatable {
-    enum Mode { case confirming, renaming }
+    enum Mode { case open, renaming }
     let id: String
     let mode: Mode
 }
 
 /// Everything a row can ask for, built per account by its section.
 private struct RowActions {
-    /// Starts or cancels asking to switch; nil when the account is already the pick.
-    let select: (() -> Void)?
-    let confirm: () -> Void
+    /// Opens or closes the row.
+    let toggle: () -> Void
+    let open: () -> Void
+    /// Makes the account the pick; nil when it already is.
+    let switchHere: (() -> Void)?
     let rename: () -> Void
     let commitName: (String) -> Void
     let dismiss: () -> Void
@@ -194,6 +197,7 @@ private struct ToolSection: View {
                          isActive: model.monitor.isActive(account, at: now),
                          problem: model.monitor.problems[account.id],
                          login: model.logins[account.id],
+                         running: model.monitor.running[account.id] ?? [],
                          mode: focus?.id == account.id ? focus?.mode : nil,
                          actions: actions(for: account))
             }
@@ -213,8 +217,9 @@ private struct ToolSection: View {
         func set(_ next: RowFocus?) { withAnimation(.easeOut(duration: 0.15)) { focus = next } }
         let picked = registry.isCurrent(account)
         return RowActions(
-            select: picked ? nil : { set(focus == RowFocus(id: account.id, mode: .confirming) ? nil : RowFocus(id: account.id, mode: .confirming)) },
-            confirm: {
+            toggle: { set(focus == RowFocus(id: account.id, mode: .open) ? nil : RowFocus(id: account.id, mode: .open)) },
+            open: { set(RowFocus(id: account.id, mode: .open)) },
+            switchHere: picked ? nil : {
                 model.use(account)
                 set(nil)
             },
@@ -244,6 +249,7 @@ private struct UsageRow: View {
     let isActive: Bool
     let problem: String?
     let login: Model.Login?
+    let running: [AppCount]
     let mode: RowFocus.Mode?
     let actions: RowActions
     @State private var hovering = false
@@ -261,11 +267,11 @@ private struct UsageRow: View {
             if mode == .renaming {
                 summary
             } else {
-                Button { actions.select?() } label: { summary }
+                Button(action: actions.toggle) { summary }
                     .buttonStyle(.plain)
             }
-            if mode == .confirming {
-                confirmation.transition(.opacity.combined(with: .move(edge: .top)))
+            if mode == .open {
+                details.transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .background(isPicked || mode != nil ? Theme.selection : hovering ? Theme.hover : .clear,
@@ -274,7 +280,7 @@ private struct UsageRow: View {
         .animation(.easeOut(duration: 0.15), value: hovering)
         .help(help)
         .contextMenu {
-            Button("Use for Next Session…") { actions.select?() }.disabled(actions.select == nil)
+            Button("Use for Next Session…", action: actions.open).disabled(actions.switchHere == nil)
             Button("Rename…", action: actions.rename)
             Divider()
             Button("Log In Again", action: actions.logIn)
@@ -282,22 +288,62 @@ private struct UsageRow: View {
         }
     }
 
-    private var confirmation: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Start new \(account.tool.spec.name) sessions on \(account.label)?")
-                .font(Theme.sans(12, .medium)).foregroundStyle(Theme.ink(0.9))
-            Text("Applies the next time you run \(account.tool.spec.command), in any terminal. Sessions already running keep their account.")
-                .font(Theme.caption).foregroundStyle(Theme.ink(0.55)).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 10) {
-                Button("Switch", action: actions.confirm)
-                    .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.pick)
-                    .keyboardShortcut(.defaultAction)
-                Button("Cancel", action: actions.dismiss)
-                    .buttonStyle(.plain).font(Theme.caption).foregroundStyle(Theme.ink(0.5))
-                    .keyboardShortcut(.cancelAction)
+    /// What runs on the account now, where its tokens went, and the switch.
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            fact("Running now") {
+                if running.isEmpty {
+                    Text("nothing").foregroundStyle(Theme.ink(0.45))
+                } else {
+                    HStack(spacing: 10) {
+                        ForEach(running, id: \.launcher) { app in
+                            HStack(spacing: 4) {
+                                LauncherIcon(launcher: app.launcher)
+                                Text(app.count > 1 ? "\(app.launcher.name) · \(app.count) sessions" : app.launcher.name)
+                            }
+                        }
+                    }
+                }
+            }
+            if let split = tokenSplit {
+                fact("Last 5 hours") { Text(split) }
+            }
+            if let switchHere = actions.switchHere {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Start new \(account.tool.spec.name) sessions on \(account.label)?")
+                        .font(Theme.sans(12, .medium)).foregroundStyle(Theme.ink(0.9))
+                    Text("Applies the next time you run \(account.tool.spec.command), in any terminal. Sessions already running keep their account.")
+                        .font(Theme.caption).foregroundStyle(Theme.ink(0.55)).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 10) {
+                        Button("Switch", action: switchHere)
+                            .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.pick)
+                            .keyboardShortcut(.defaultAction)
+                        Button("Cancel", action: actions.dismiss)
+                            .buttonStyle(.plain).font(Theme.caption).foregroundStyle(Theme.ink(0.5))
+                            .keyboardShortcut(.cancelAction)
+                    }
+                }
+                .padding(.top, 2)
+            } else {
+                // The picked account has no switch, and so no Cancel button; Esc still closes the row.
+                Button("", action: actions.dismiss).keyboardShortcut(.cancelAction).opacity(0).frame(width: 0, height: 0)
             }
         }
         .padding(.horizontal, 8).padding(.bottom, 9)
+    }
+
+    private func fact<Content: View>(_ label: String, @ViewBuilder _ content: () -> Content) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label).foregroundStyle(Theme.ink(0.4)).frame(width: 78, alignment: .leading)
+            content().foregroundStyle(Theme.ink(0.75))
+        }
+        .font(Theme.caption)
+    }
+
+    /// "T3 Code 68% · Terminal 22% · Claude desktop 10% of 1.9M output tokens", from the transcripts.
+    private var tokenSplit: String? {
+        guard let activity, let shares = UsageFormat.shares(activity.byOrigin) else { return nil }
+        return shares + " of \(UsageFormat.tokens(activity.outputTokens)) output tokens"
     }
 
     private var summary: some View {
@@ -349,8 +395,7 @@ private struct UsageRow: View {
                               : "Click to start new \(account.tool.spec.name) sessions on \(account.label)"
         let more = "Right-click to rename, log in again or show its folder"
         guard let activity else { return "\(action)\n\(more)" }
-        let tokens = activity.outputTokens.formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))
-        return "\(tokens) output tokens · \(activity.requests) requests in the last 5h\n\(action)\n\(more)"
+        return "\(UsageFormat.tokens(activity.outputTokens)) output tokens · \(activity.requests) requests in the last 5h\n\(action)\n\(more)"
     }
 
     private var titleLine: some View {
@@ -390,6 +435,9 @@ private struct UsageRow: View {
             }
             if let plan = identity?.plan {
                 Text(plan).font(Theme.caption).foregroundStyle(Theme.ink(0.4)).fixedSize()
+            }
+            if !running.isEmpty {
+                RunningApps(apps: running)
             }
             if isPicked {
                 Badge(text: "Next session", systemImage: "checkmark.circle.fill", tint: Theme.pick, filled: true)
@@ -436,6 +484,38 @@ private struct UsageRow: View {
                     .foregroundStyle(Theme.ink(0.4))
                     .help("\(headline.label) resets \(resetsAt.formatted(date: .omitted, time: .shortened))")
             }
+        }
+    }
+}
+
+/// The apps running sessions on an account, as icons with a count, so who uses which
+/// subscription shows without a click.
+private struct RunningApps: View {
+    let apps: [AppCount]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(apps.prefix(3), id: \.launcher) { app in
+                HStack(spacing: 1) {
+                    LauncherIcon(launcher: app.launcher)
+                    if app.count > 1 { Text("\(app.count)").font(Theme.sans(9, .semibold)).foregroundStyle(Theme.ink(0.5)) }
+                }
+            }
+        }
+        .fixedSize()
+        .help("Running now: " + UsageFormat.running(apps))
+        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+    }
+}
+
+private struct LauncherIcon: View {
+    let launcher: Launcher
+
+    var body: some View {
+        if let bundle = launcher.bundle {
+            Image(nsImage: AppIcons.icon(for: bundle)).resizable().frame(width: 14, height: 14)
+        } else {
+            Image(systemName: "gearshape").font(.system(size: 10)).foregroundStyle(Theme.ink(0.45)).frame(width: 14, height: 14)
         }
     }
 }

@@ -18,9 +18,12 @@ public enum AppInstall {
 
     /// The .app that contains `executable`, through symlinks such as Homebrew's bin link.
     public static func bundle(containing executable: String) -> String? {
-        let path = canonical(executable)
-        guard let range = path.range(of: ".app/Contents/") else { return nil }
-        return String(path[..<range.lowerBound]) + ".app"
+        appBundle(around: canonical(executable))
+    }
+
+    /// The outermost app bundle in a path, so a helper app inside another reads as the outer one.
+    static func appBundle(around path: String) -> String? {
+        path.range(of: ".app/Contents/").map { String(path[..<$0.lowerBound]) + ".app" }
     }
 
     public static func version(of app: String) -> String? {
