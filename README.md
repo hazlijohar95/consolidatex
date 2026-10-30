@@ -19,9 +19,11 @@ $ acc
 ## Install
 
 ```
-brew install --cask hazlijohar95/tap/consolidatex
+brew install hazlijohar95/tap/consolidatex
 acc setup
 ```
+
+Homebrew builds Consolidatex from source in about a minute, so the app opens without Gatekeeper prompts. If Homebrew says your Command Line Tools are outdated, update them in System Settings › Software Update first.
 
 `acc setup` does the following, asking before each change:
 
@@ -29,6 +31,7 @@ acc setup
 2. Hooks up your shell (zsh, bash or fish), so `claude`, `codex` and `opencode` start on the account you picked.
 3. Turns on the Claude Code status line.
 4. Shares config across accounts.
+5. Adds the menu bar app to `~/Applications`. After a `brew upgrade`, `acc doctor` tells you when the app needs refreshing.
 
 Run it again at any time. It only adds what's missing.
 
@@ -88,7 +91,7 @@ To add a tool, add a `ToolSpec` and a `<Tool>Support` file, then extend the swit
 Releases are built by `.github/workflows/release.yml` whenever a `v*` tag is pushed:
 
 - **Signing and notarizing** turns on once the `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` secrets exist.
-- **Updating the Homebrew tap** turns on once the `HOMEBREW_TAP_TOKEN` secret exists.
+- **Updating the Homebrew tap** turns on once the `HOMEBREW_TAP_TOKEN` secret exists. The tap gets a formula that builds the tagged source.
 
 ## License
 

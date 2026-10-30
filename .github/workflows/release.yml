@@ -66,11 +66,15 @@ jobs:
           rm dist/notarize.zip
 
       - name: Package
+        env:
+          REPO: ${{ github.repository }}
         run: |
           cd dist
           ditto -c -k --keepParent Consolidatex.app "Consolidatex-$VERSION.zip"
-          shasum -a 256 "Consolidatex-$VERSION.zip" | tee "Consolidatex-$VERSION.zip.sha256"
-          sha=$(cut -d' ' -f1 "Consolidatex-$VERSION.zip.sha256")
+          shasum -a 256 "Consolidatex-$VERSION.zip" > "Consolidatex-$VERSION.zip.sha256"
+          # The Homebrew formula builds from the tag's source tarball, so it needs that tarball's checksum.
+          curl -fsSL "https://github.com/$REPO/archive/refs/tags/$VERSION.tar.gz" -o source.tar.gz
+          sha=$(shasum -a 256 source.tar.gz | cut -d' ' -f1)
           sed -e "s/__VERSION__/${VERSION#v}/" -e "s/__SHA256__/$sha/" ../packaging/homebrew/consolidatex.rb > consolidatex.rb
 
       - name: Publish release
@@ -87,11 +91,11 @@ jobs:
         run: |
           if [ -z "$HOMEBREW_TAP_TOKEN" ]; then echo "no HOMEBREW_TAP_TOKEN; skipping tap update"; exit 0; fi
           git clone "https://x-access-token:$HOMEBREW_TAP_TOKEN@github.com/${{ github.repository_owner }}/homebrew-tap.git" tap
-          mkdir -p tap/Casks
-          cp dist/consolidatex.rb tap/Casks/consolidatex.rb
+          mkdir -p tap/Formula
+          cp dist/consolidatex.rb tap/Formula/consolidatex.rb
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Casks/consolidatex.rb
+          git add Formula/consolidatex.rb
           git commit -m "consolidatex ${VERSION#v}"
           git push
