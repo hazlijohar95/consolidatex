@@ -1,0 +1,16 @@
+#!/bin/zsh
+# Unit tests (AccCore) then the black-box CLI + shell wrapper tests.
+set -eu
+cd ${0:A:h:h}
+
+# Command Line Tools ship swift-testing outside the default search path; Xcode does not need this.
+clt=/Library/Developer/CommandLineTools/Library/Developer
+testing_flags=()
+if [[ -d $clt/Frameworks/Testing.framework ]]; then
+  testing_flags=(-Xswiftc -F$clt/Frameworks -Xlinker -F$clt/Frameworks
+    -Xlinker -rpath -Xlinker $clt/Frameworks -Xlinker -rpath -Xlinker $clt/usr/lib)
+fi
+
+swift build
+swift test $testing_flags 2>&1 | grep -E 'passed|failed|error' | tail -3
+ACC_BIN=$PWD/.build/debug/acc zsh Tests/e2e.sh
