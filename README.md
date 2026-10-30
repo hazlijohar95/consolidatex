@@ -23,7 +23,7 @@ brew install hazlijohar95/tap/consolidatex
 acc setup
 ```
 
-Homebrew builds Consolidatex from source in about a minute, so the app opens without Gatekeeper prompts. If Homebrew says your Command Line Tools are outdated, update them in System Settings › Software Update first.
+Homebrew builds Consolidatex from source in about a minute, so the app opens without Gatekeeper prompts. It needs macOS 14 or later. If Homebrew says your Command Line Tools are outdated, update them in System Settings › Software Update first.
 
 `acc setup` does the following, asking before each change:
 

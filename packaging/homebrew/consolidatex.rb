@@ -6,7 +6,8 @@ class Consolidatex < Formula
   license "MIT"
   head "https://github.com/hazlijohar95/consolidatex.git", branch: "main"
 
-  depends_on macos: :ventura
+  # swift-tools-version 6.0 needs Xcode or Command Line Tools 16, which need macOS 14.
+  depends_on macos: :sonoma
 
   # Built from source on purpose: an app compiled on the user's Mac is not quarantined,
   # so it opens without Gatekeeper prompts even though releases are not yet notarized.

@@ -47,6 +47,8 @@ public enum ShellInit {
         if let legacy = lines.firstIndex(where: { $0.contains(".config/acc/acc.zsh") }) {
             lines[legacy] = line
             try write(lines.joined(separator: "\n"), to: file)
+            // The old wrapper only knew `claude`; nothing sources it any more.
+            try? FileManager.default.removeItem(atPath: home + "/.config/acc/acc.zsh")
             return .replacedLegacy
         }
         let prefix = existing.isEmpty || existing.hasSuffix("\n") ? existing : existing + "\n"

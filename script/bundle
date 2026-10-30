@@ -9,7 +9,7 @@ root=${0:A:h:h}
 rm -rf "$out"
 mkdir -p "$out/Contents/MacOS" "$out/Contents/Resources"
 install -m 755 "$products/Consolidatex" "$out/Contents/MacOS/Consolidatex"
-# The CLI ships inside the app so one download (and the Homebrew cask) provides both.
+# The CLI ships inside the app so one build (and the Homebrew formula) provides both.
 install -m 755 "$products/acc" "$out/Contents/Resources/acc"
 sed "s/__VERSION__/$version/g" "$root/app/Info.plist" > "$out/Contents/Info.plist"
 

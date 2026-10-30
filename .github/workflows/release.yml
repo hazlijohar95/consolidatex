@@ -73,7 +73,7 @@ jobs:
           ditto -c -k --keepParent Consolidatex.app "Consolidatex-$VERSION.zip"
           shasum -a 256 "Consolidatex-$VERSION.zip" > "Consolidatex-$VERSION.zip.sha256"
           # The Homebrew formula builds from the tag's source tarball, so it needs that tarball's checksum.
-          curl -fsSL "https://github.com/$REPO/archive/refs/tags/$VERSION.tar.gz" -o source.tar.gz
+          curl -fsSL --retry 3 "https://github.com/$REPO/archive/refs/tags/$VERSION.tar.gz" -o source.tar.gz
           sha=$(shasum -a 256 source.tar.gz | cut -d' ' -f1)
           sed -e "s/__VERSION__/${VERSION#v}/" -e "s/__SHA256__/$sha/" ../packaging/homebrew/consolidatex.rb > consolidatex.rb
 
@@ -97,5 +97,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Formula/consolidatex.rb
+          if git diff --cached --quiet; then echo "tap already has consolidatex ${VERSION#v}"; exit 0; fi
           git commit -m "consolidatex ${VERSION#v}"
           git push

@@ -188,7 +188,9 @@ func write(_ text: String, to path: String) {
                 == "export A=1\n\n\(ShellInit.marker)\n" + #"eval "$(acc shell-init zsh)""# + "\n")
 
         write("x\n# Claude Code account switcher\nsource ~/.config/acc/acc.zsh\ny\n", to: home + "/.zshrc")
+        write("claude() { … }", to: home + "/.config/acc/acc.zsh")
         #expect(try ShellInit.installHook(.zsh, home: home) == .replacedLegacy)
+        #expect(!FileManager.default.fileExists(atPath: home + "/.config/acc/acc.zsh"))
         #expect(try String(contentsOfFile: home + "/.zshrc", encoding: .utf8)
                 == "x\n# Claude Code account switcher\n" + #"eval "$(acc shell-init zsh)""# + "\ny\n")
 
