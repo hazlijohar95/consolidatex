@@ -213,3 +213,47 @@ func write(_ text: String, to path: String) {
         #expect((try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: path)))) != nil)
     }
 }
+
+@Suite struct AppInstalling {
+    func makeApp(_ path: String, version: String) {
+        write("bin", to: path + "/Contents/Resources/acc")
+        write(#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>\#(version)</string></dict></plist>"#,
+              to: path + "/Contents/Info.plist")
+    }
+
+    @Test func findsTheBundleThroughHomebrewsSymlink() throws {
+        let home = tempHome()
+        makeApp(home + "/Cellar/consolidatex/2.1.0/Consolidatex.app", version: "2.1.0")
+        try FileManager.default.createDirectory(atPath: home + "/bin", withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: home + "/bin/acc",
+                                                   withDestinationPath: home + "/Cellar/consolidatex/2.1.0/Consolidatex.app/Contents/Resources/acc")
+        #expect(AppInstall.bundle(containing: home + "/bin/acc") == home + "/Cellar/consolidatex/2.1.0/Consolidatex.app")
+        #expect(AppInstall.bundle(containing: "/usr/local/bin/acc") == nil)
+    }
+
+    @Test func missingThenCurrentThenOutdated() throws {
+        let home = tempHome()
+        let keg = home + "/Cellar/consolidatex/2.1.0/Consolidatex.app"
+        makeApp(keg, version: "2.1.0")
+        let acc = keg + "/Contents/Resources/acc"
+        #expect(AppInstall.status(executable: acc, home: home) == .missing(bundle: keg))
+
+        let installed = try AppInstall.install(keg, home: home)
+        #expect(installed == home + "/Applications/Consolidatex.app")
+        #expect(AppInstall.status(executable: acc, home: home) == .current(installed))
+
+        makeApp(installed, version: "2.0.0")
+        #expect(AppInstall.status(executable: acc, home: home) == .outdated(installed: installed, version: "2.0.0", bundle: keg))
+        try AppInstall.install(keg, to: installed, home: home)
+        #expect(AppInstall.version(of: installed) == "2.1.0")
+        #expect(!FileManager.default.fileExists(atPath: installed + ".installing"))
+    }
+
+    @Test func runningFromTheInstalledAppIsInPlace() {
+        let home = tempHome()
+        let app = home + "/Applications/Consolidatex.app"
+        makeApp(app, version: "2.1.0")
+        #expect(AppInstall.status(executable: app + "/Contents/Resources/acc", home: home) == .inPlace(app))
+        #expect(AppInstall.status(executable: home + "/.build/release/acc", home: home) == .notBundled)
+    }
+}

@@ -203,6 +203,9 @@ func doctor(fix: Bool) throws -> Bool {
             say("! shell     \(shell.rawValue) hook not installed, so `claude`/`codex`/`opencode` ignore acc → acc setup")
         }
     }
+    if case .outdated(let installed, let old, _) = appStatus() {
+        say("! app       \(installed.replacingOccurrences(of: userHome(), with: "~")) is \(old ?? "older"), acc is \(version) → acc setup")
+    }
     if !emails.isEmpty { try store.update { r in for (id, email) in emails { r.recordEmail(email, for: id) } } }
     return healthy
 }
@@ -281,9 +284,36 @@ func ask(_ question: String) -> Bool {
     return answer.isEmpty || answer == "y" || answer == "yes"
 }
 
-func appPath() -> String? {
-    ["\(userHome())/Applications/Consolidatex.app", "/Applications/Consolidatex.app"]
-        .first { FileManager.default.fileExists(atPath: $0) }
+func runCommand(_ path: String, _ arguments: [String]) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: path)
+    process.arguments = arguments
+    process.standardError = FileHandle.nullDevice
+    try? process.run()
+    process.waitUntilExit()
+}
+
+func appStatus() -> AppInstall.Status {
+    AppInstall.status(executable: Bundle.main.executablePath ?? CommandLine.arguments[0])
+}
+
+/// Puts the menu bar app in ~/Applications (Homebrew builds it inside its keg), then offers to open it.
+func setupApp() throws {
+    var app: String?
+    switch appStatus() {
+    case .notBundled:
+        return
+    case .inPlace(let path), .current(let path):
+        app = path
+    case .missing(let bundle):
+        if ask("\nAdd the Consolidatex menu bar app to ~/Applications?") { app = try AppInstall.install(bundle) }
+    case .outdated(let installed, let old, let bundle):
+        if ask("\nUpdate \(installed.replacingOccurrences(of: userHome(), with: "~")) from \(old ?? "an older version") to \(version)?") {
+            runCommand("/usr/bin/pkill", ["-x", "Consolidatex"])
+            app = try AppInstall.install(bundle, to: installed)
+        }
+    }
+    if let app, ask("Open it now?") { runCommand("/usr/bin/open", [app]) }
 }
 
 func setup() throws {
@@ -350,13 +380,7 @@ func setup() throws {
         }
     }
 
-    if let app = appPath(), ask("\nOpen the Consolidatex menu bar app?") {
-        let open = Process()
-        open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        open.arguments = [app]
-        try? open.run()
-        open.waitUntilExit()
-    }
+    try setupApp()
 
     say("\nDone. In a new terminal:")
     say("  acc            pick accounts")
