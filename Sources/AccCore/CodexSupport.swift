@@ -73,7 +73,7 @@ public enum CodexSupport {
         else { return nil }
         let window = { (w: Window?) in w.map { RateWindow(usedPercent: $0.used_percent, minutes: $0.window_minutes, resetsAt: $0.resets_at) } }
         return usage(limitID: limits.limit_id, plan: limits.plan_type, primary: window(limits.primary), secondary: window(limits.secondary),
-                     at: event.timestamp.flatMap { ISO8601DateFormatter.withFractions.date(from: $0) } ?? Date())
+                     at: event.timestamp.flatMap { try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse($0) } ?? Date())
     }
 
     /// One rate-limit window as Codex reports it, in a session file or from its app server.
@@ -174,12 +174,3 @@ public enum CodexSupport {
     }
 }
 
-extension ISO8601DateFormatter {
-    nonisolated(unsafe) static let plain = ISO8601DateFormatter()
-
-    nonisolated(unsafe) static let withFractions: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-}
