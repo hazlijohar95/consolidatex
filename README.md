@@ -9,14 +9,32 @@ Each subscription is a Claude Code config directory (`CLAUDE_CONFIG_DIR`). `acc`
 ```
 acc                 pick (fzf; press 1-9)
 acc cto             switch
+acc auto            switch to the account with the most quota left
 claude              start on the current account
 claude @qeel        one session on another account, no switch
-acc ls              list (● = current)
-acc doctor          check every account exists and is logged in
-acc add <id> --label <name>   new subscription: creates ~/.claude-<id> and logs in
+acc continue        out of quota? resume this folder's latest conversation on the
+                    roomiest other account (or `acc continue hello`)
+acc ls              list with last-seen usage (● = current)
+acc doctor          check logins, shared config and MCP servers
+acc sync            share config and MCP servers from the primary account
+acc add <id> --label <name>   new subscription: creates ~/.claude-<id>, shares config, logs in
 acc login <id>      log an account in again
 acc rename <id> <label> / acc rm <id>
 ```
+
+## Usage tracking
+
+Set the status line in the shared `settings.json`:
+
+```json
+"statusLine": { "type": "command", "command": "/Users/<you>/.local/bin/acc statusline" }
+```
+
+Each session's status line shows its account, its 5-hour and 7-day usage, the model and how full the context is. Once the account passes 90%, it suggests `acc continue <roomiest>`. Each time it renders, it records that account's usage, which is the `rate_limits` data Claude Code already passes to status lines, in `~/.config/acc/usage/<id>.json`. `acc ls`, `acc auto`, `acc continue` and the menu bar all read those files. acc never handles tokens or calls an API. The cost is that an account shows `no data yet` until a session on it has rendered a status line.
+
+## Shared config
+
+The primary account (the one with `configDir: null`) owns `CLAUDE.md`, `settings.json`, `skills`, `agents`, `commands`, `plugins` and `hooks`. Every other account symlinks them. User-scope MCP servers are stored in each account's own `.claude.json`, so `acc sync` copies them from the primary using `claude mcp add-json`. A server that exists only on another account is reported and kept. `--prune` removes it. Add new MCP servers to the primary, then run `acc sync`. OAuth MCP servers still need logging in once per account.
 
 `acc help` has the full list.
 

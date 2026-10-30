@@ -1,14 +1,18 @@
 import AccCore
 import Foundation
 
-let version = "1.0.0"
+let version = "1.1.0"
 
 let usage = """
     acc: choose which Claude Code subscription new `claude` sessions use.
 
       acc                     pick an account (fzf; press 1-9 to jump)
       acc <account>           switch to it: `acc cto`, `acc 4`
-      acc ls [--json]         list accounts (● = current)
+      acc auto                switch to the account with the most quota left
+      acc continue [<account>] [--session <id>]
+                              resume this folder's latest conversation on another
+                              account (default: the one with the most quota left)
+      acc ls [--json]         list accounts with last-seen usage (● = current)
       acc current [--json]    show the current account
       acc run <account> [--] [claude args]
                               run claude once on an account without switching
@@ -17,7 +21,10 @@ let usage = """
       acc login <account>     log an account in again and record its email
       acc rename <account> <label>
       acc rm <account>        unregister (its config dir is kept)
-      acc doctor [--fix]      check every account is reachable and logged in
+      acc doctor [--fix]      check accounts are logged in and share config with the primary
+      acc sync [--prune]      link shared config and mirror MCP servers from the primary;
+                              --prune also removes MCP servers the primary does not have
+      acc statusline          Claude Code status line: shows the account and records its usage
       acc dir [<account>]     print CLAUDE_CONFIG_DIR for an account (empty = default)
       acc version
 
@@ -47,12 +54,16 @@ func pad(_ s: String, _ width: Int) -> String {
     s.count >= width ? s : s + String(repeating: " ", count: width - s.count)
 }
 
+let usageStore = UsageStore(registryStore: store)
+
 func rows(_ registry: Registry) -> [String] {
+    let usage = usageStore.all(registry)
     let idWidth = registry.accounts.map(\.id.count).max() ?? 0
     let labelWidth = registry.accounts.map(\.label.count).max() ?? 0
+    let emailWidth = registry.accounts.map { $0.email?.count ?? 0 }.max() ?? 0
     return registry.accounts.enumerated().map { i, a in
         let mark = a.id == registry.current ? "●" : " "
-        return "\(mark) \(i + 1)  \(pad(a.id, idWidth))  \(pad(a.label, labelWidth))  \(a.email ?? "")"
+        return "\(mark) \(i + 1)  \(pad(a.id, idWidth))  \(pad(a.label, labelWidth))  \(pad(a.email ?? "", emailWidth))  \(UsageFormat.summary(usage[a.id]))"
     }
 }
 
@@ -176,12 +187,95 @@ func doctor(fix: Bool) throws -> Bool {
             say("✓ \(name)  \(s.email ?? "")")
         }
     }
+    for account in registry.accounts where account.id != registry.primary.id {
+        for issue in sharedIssues(account, primary: registry.primary) { say("! \(pad(account.id, width))  \(issue)") }
+    }
     if !emails.isEmpty {
         try store.update { r in
             for i in r.accounts.indices { if let e = emails[r.accounts[i].id] { r.accounts[i].email = e } }
         }
     }
     return healthy
+}
+
+
+/// What differs between an account and the primary's shared config, in words.
+func sharedIssues(_ account: Account, primary: Account) -> [String] {
+    var issues: [String] = []
+    for (item, state) in Shared.links(for: account, primary: primary) {
+        switch state {
+        case .linked: break
+        case .missing: issues.append("\(item) is not shared from \(primary.id) → acc sync")
+        case .local: issues.append("keeps its own \(item) instead of \(primary.id)'s (move it aside, then acc sync)")
+        case .elsewhere(let dest): issues.append("\(item) links to \(dest), not \(primary.id)'s")
+        }
+    }
+    let drift = Shared.mcpDrift(account, primary: primary)
+    if !drift.missing.isEmpty { issues.append("missing MCP servers \(drift.missing.joined(separator: ", ")) → acc sync") }
+    if !drift.different.isEmpty { issues.append("MCP servers differ from \(primary.id): \(drift.different.joined(separator: ", ")) → acc sync") }
+    if !drift.extra.isEmpty {
+        issues.append("has MCP servers \(primary.id) lacks: \(drift.extra.joined(separator: ", ")) (add them to \(primary.id) to share, or acc sync --prune)")
+    }
+    return issues
+}
+
+/// Makes one account match the primary's shared config. Returns what it changed.
+func syncAccount(_ account: Account, primary: Account, claude: Claude, prune: Bool) throws -> [String] {
+    var changes = try Shared.link(account, primary: primary).map { "linked \($0)" }
+    let drift = Shared.mcpDrift(account, primary: primary)
+    let wanted = Shared.mcpServers(primary)
+    for name in drift.missing + drift.different {
+        try claude.addMCPServer(name, definition: wanted[name]!, to: account)
+        changes.append("MCP \(name) " + (drift.missing.contains(name) ? "added" : "updated"))
+    }
+    if prune {
+        for name in drift.extra {
+            try claude.removeMCPServer(name, from: account)
+            changes.append("MCP \(name) removed")
+        }
+    }
+    return changes
+}
+
+/// The roomiest account other than `excluded`, if any is known to have room.
+func roomiest(_ registry: Registry, excluding excluded: String?) -> Account? {
+    let usage = usageStore.all(registry)
+    return registry.byHeadroom(usage, excluding: Set([excluded].compactMap { $0 })).first { (usage[$0.id]?.load(at: Date()) ?? 0) < 90 }
+}
+
+func statusLine() {
+    let input = (try? JSONDecoder().decode(StatusInput.self, from: FileHandle.standardInput.readDataToEndOfFile()))
+        ?? .empty
+    guard let registry = try? store.load() else {
+        print("✳ acc: registry problem, run acc doctor")
+        return
+    }
+    let now = Date()
+    let account = registry.account(forConfigDir: ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"])
+    var usage = account.flatMap { usageStore.load($0.id) }
+    if let live = input.usage(at: now), let account {
+        try? usageStore.record(live, for: account.id)
+        usage = live
+    }
+    print(StatusLine.render(account: account, usage: usage, input: input,
+                            suggestion: roomiest(registry, excluding: account?.id), now: now))
+}
+
+func continueSession(_ ref: String?, sessionID: String?) throws -> Never {
+    let registry = try store.load()
+    let cwd = FileManager.default.currentDirectoryPath
+    let sessions = Sessions.forProject(cwd, in: registry)
+    let candidates = sessionID.map { id in sessions.filter { $0.id.hasPrefix(id) } } ?? sessions
+    guard let session = candidates.first else {
+        throw AccError.usage(sessionID.map { "no session \($0) for \(cwd)" } ?? "no Claude Code conversation found for \(cwd)")
+    }
+    guard let target = try ref.map(registry.resolve) ?? roomiest(registry, excluding: session.account.id) else {
+        throw AccError.usage("every other account is near its limit; name one: acc continue <account>")
+    }
+    if target.id != session.account.id { try Sessions.copy(session, to: target) }
+    let age = UsageFormat.relative(Date(), from: session.modified).replacingOccurrences(of: "in ", with: "")
+    FileHandle.standardError.write(Data("↪ continuing \(session.id.prefix(8)) (last active \(age) ago on \(session.account.id)) on \(target.id)\n".utf8))
+    throw try Claude.locate().exec(account: target, arguments: ["--resume", session.id])
 }
 
 func main() throws {
@@ -204,6 +298,31 @@ func main() throws {
     case "current":
         let account = try store.load().currentAccount
         if flag("--json", in: &args) { say(try json(account)) } else { say(describe(account)) }
+
+    case "auto":
+        let registry = try store.load()
+        guard let best = registry.byHeadroom(usageStore.all(registry)).first else { throw AccError.usage("no accounts") }
+        try switchTo(best.id)
+        say("  \(UsageFormat.summary(usageStore.load(best.id)))")
+
+    case "continue":
+        let session = try option("--session", in: &args)
+        try continueSession(args.first, sessionID: session)
+
+    case "sync":
+        let prune = flag("--prune", in: &args)
+        let registry = try store.load()
+        let claude = try Claude.locate()
+        var changed = false
+        for account in registry.accounts where account.id != registry.primary.id {
+            let changes = try syncAccount(account, primary: registry.primary, claude: claude, prune: prune)
+            if !changes.isEmpty { say("\(account.id): \(changes.joined(separator: ", "))"); changed = true }
+            for issue in sharedIssues(account, primary: registry.primary) { say("! \(account.id): \(issue)") }
+        }
+        if !changed { say("everything already matches \(registry.primary.id)") }
+
+    case "statusline":
+        statusLine()
 
     case "use":
         guard let ref = args.first else { throw AccError.usage("usage: acc use <account>") }
@@ -233,7 +352,11 @@ func main() throws {
         if let path = account.resolvedConfigDir() {
             try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
         }
-        account.email = try logIn(account, claude: try Claude.locate()).email
+        let claude = try Claude.locate()
+        if let registry = existing {
+            for change in try syncAccount(account, primary: registry.primary, claude: claude, prune: false) { say("  \(change)") }
+        }
+        account.email = try logIn(account, claude: claude).email
         if var registry = existing {
             registry.accounts.append(account)
             try store.save(registry)

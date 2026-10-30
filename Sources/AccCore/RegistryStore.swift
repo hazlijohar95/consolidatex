@@ -14,7 +14,7 @@ public struct RegistryStore: Sendable {
         if let home = environment["ACC_HOME"], !home.isEmpty {
             return RegistryStore(directory: URL(fileURLWithPath: home, isDirectory: true))
         }
-        return RegistryStore(directory: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".config/acc", isDirectory: true))
+        return RegistryStore(directory: URL(fileURLWithPath: userHome()).appendingPathComponent(".config/acc", isDirectory: true))
     }
 
     public var exists: Bool { FileManager.default.fileExists(atPath: file.path) }

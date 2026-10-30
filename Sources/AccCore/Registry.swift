@@ -17,7 +17,7 @@ public struct Account: Codable, Equatable, Sendable {
     }
 
     /// The value for CLAUDE_CONFIG_DIR, or nil to leave it unset.
-    public func resolvedConfigDir(home: String = NSHomeDirectory()) -> String? {
+    public func resolvedConfigDir(home: String = userHome()) -> String? {
         guard let configDir else { return nil }
         if configDir == "~" { return home }
         if configDir.hasPrefix("~/") { return home + configDir.dropFirst(1) }
@@ -29,7 +29,8 @@ public struct Registry: Codable, Equatable, Sendable {
     public static let currentVersion = 1
     /// Words `acc` treats as subcommands, so they can never be account ids.
     public static let reservedIDs: Set<String> = [
-        "add", "current", "dir", "doctor", "help", "login", "ls", "list", "rename", "rm", "run", "use", "version",
+        "add", "auto", "continue", "current", "dir", "doctor", "help", "login", "ls", "list", "rename", "rm", "run",
+        "statusline", "sync", "use", "version",
     ]
 
     public var version: Int

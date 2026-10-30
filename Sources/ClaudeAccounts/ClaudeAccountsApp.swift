@@ -13,13 +13,20 @@ final class Model: ObservableObject {
     @Published private(set) var state: State = .failed("loading")
     @Published private(set) var opensAtLogin = SMAppService.mainApp.status == .enabled
     @Published private(set) var lastError: String?
+    @Published private(set) var usage: [String: Usage] = [:]
 
     let store = RegistryStore.standard()
+    private lazy var usageStore = UsageStore(registryStore: store)
     private var watcher: DispatchSourceFileSystemObject?
+    private var usageTimer: Timer?
 
     init() {
         reload()
         watch()
+        // Status lines record usage every few seconds while sessions run; resets also pass with time.
+        usageTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reloadUsage() }
+        }
     }
 
     func reload() {
@@ -28,6 +35,18 @@ final class Model: ObservableObject {
         } catch {
             state = .failed(String(describing: error))
         }
+        reloadUsage()
+    }
+
+    func reloadUsage() {
+        guard case .loaded(let registry) = state else { return }
+        let next = usageStore.all(registry)
+        if next != usage { usage = next }
+    }
+
+    func useRoomiest() {
+        guard case .loaded(let registry) = state, let best = registry.byHeadroom(usage).first else { return }
+        use(best)
     }
 
     func use(_ account: Account) {
@@ -80,10 +99,13 @@ struct AccountMenu: View {
             Text("New claude sessions use:")
             ForEach(Array(registry.accounts.enumerated()), id: \.element.id) { index, account in
                 Toggle(isOn: Binding(get: { registry.current == account.id }, set: { _ in model.use(account) })) {
-                    Text([account.label, account.email].compactMap { $0 }.joined(separator: "    "))
+                    Text("\(account.label)    \(UsageFormat.summary(model.usage[account.id]))")
                 }
                 .keyboardShortcut(index < 9 ? KeyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: []) : nil)
             }
+            Divider()
+            Button("Use the Account with the Most Room") { model.useRoomiest() }
+                .keyboardShortcut("a")
         case .failed(let message):
             Text("⚠︎ \(message)")
             Text("Run `acc doctor` in a terminal to fix it.")
@@ -109,7 +131,9 @@ struct ClaudeAccountsApp: App {
             AccountMenu(model: model)
         } label: {
             switch model.state {
-            case .loaded(let registry): Text("✳︎ \(registry.currentAccount.label)")
+            case .loaded(let registry):
+                let used = model.usage[registry.current].map { " \(Int($0.load(at: Date()).rounded()))%" } ?? ""
+                Text("✳︎ \(registry.currentAccount.label)\(used)")
             case .failed: Text("✳︎ ⚠︎")
             }
         }
