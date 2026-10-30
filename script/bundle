@@ -7,16 +7,16 @@ products=$1 out=$2 version=$3 identity=${4:--}
 root=${0:A:h:h}
 
 rm -rf "$out"
-mkdir -p "$out/Contents/MacOS" "$out/Contents/Resources"
+mkdir -p "$out/Contents/MacOS"
 install -m 755 "$products/Consolidatex" "$out/Contents/MacOS/Consolidatex"
 # The CLI ships inside the app so one build (and the Homebrew formula) provides both.
-install -m 755 "$products/acc" "$out/Contents/Resources/acc"
+install -m 755 "$products/acc" "$out/Contents/MacOS/acc"
 sed "s/__VERSION__/$version/g" "$root/app/Info.plist" > "$out/Contents/Info.plist"
 
 if [[ $identity == - ]]; then
-  codesign --force --sign - "$out/Contents/Resources/acc"
+  codesign --force --sign - "$out/Contents/MacOS/acc"
   codesign --force --sign - "$out"
 else
-  codesign --force --options runtime --timestamp --sign "$identity" "$out/Contents/Resources/acc"
+  codesign --force --options runtime --timestamp --sign "$identity" "$out/Contents/MacOS/acc"
   codesign --force --options runtime --timestamp --sign "$identity" "$out"
 fi

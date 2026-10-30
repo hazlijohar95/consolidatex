@@ -57,10 +57,6 @@ func pad(_ s: String, _ width: Int) -> String {
 
 func tool(named name: String) -> Tool? { Tool.allCases.first { $0.rawValue == name || $0.spec.command == name } }
 
-func loadOrEmpty() throws -> Registry {
-    do { return try store.load() } catch AccError.registryMissing { return .empty }
-}
-
 func rows(_ registry: Registry, tool: Tool? = nil) -> [(Account, String)] {
     let shown = registry.ordered.filter { tool == nil || $0.tool == tool }
     let usage = usages.all(registry)
@@ -88,26 +84,19 @@ func switchTo(_ ref: String, tool: Tool? = nil) throws {
     if let chosen { say("\(chosen.tool.spec.command) → \(describe(chosen))") }
 }
 
-func which(_ name: String) -> String? {
-    for dir in (environment["PATH"] ?? "").split(separator: ":") {
-        let path = "\(dir)/\(name)"
-        if FileManager.default.isExecutableFile(atPath: path) { return path }
-    }
-    return nil
-}
-
 /// Interactive pick. Returns the chosen account id, or nil if cancelled.
 func pick(_ registry: Registry, tool: Tool?) throws -> String? {
     let lines = rows(registry, tool: tool).map { "\($0.0.id)\t\($0.1)" }
     guard !lines.isEmpty else { throw AccError.usage("no accounts yet (run: acc setup)") }
-    guard let fzf = which("fzf") else {
+    guard let fzf = Runner.which("fzf") else {
         lines.forEach { say(String($0.split(separator: "\t", maxSplits: 1)[1])) }
         FileHandle.standardOutput.write(Data("account: ".utf8))
         guard let answer = readLine(), !answer.isEmpty else { return nil }
         return try registry.resolve(answer, tool: tool).id
     }
-    let shown = registry.ordered.filter { tool == nil || $0.tool == tool }
-    let jumps = shown.prefix(9).enumerated().map { "\($0 + 1):become(echo \($1.id))" }
+    let jumps = registry.ordered.prefix(9).enumerated()
+        .filter { tool == nil || $1.tool == tool }
+        .map { "\($0 + 1):become(echo \($1.id))" }
     let process = Process()
     process.executableURL = URL(fileURLWithPath: fzf)
     process.arguments = [
@@ -156,30 +145,9 @@ func ensureLoggedIn(_ account: Account, runner: Runner) throws -> Runner.AuthSta
     return status
 }
 
-/// Per-account results written from concurrentPerform's threads.
-final class Results<T>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var values: [T?]
-    init(count: Int) { values = Array(repeating: nil, count: count) }
-    subscript(i: Int) -> T? {
-        get { lock.withLock { values[i] } }
-        set { lock.withLock { values[i] = newValue } }
-    }
-}
-
-func checkAll(_ registry: Registry) -> [String: AccountHealth] {
-    let accounts = registry.ordered
-    let runners = Dictionary(uniqueKeysWithValues: Tool.allCases.map { ($0, try? Runner.locate($0)) })
-    let results = Results<AccountHealth>(count: accounts.count)
-    DispatchQueue.concurrentPerform(iterations: accounts.count) { i in
-        results[i] = AccountHealth.check(accounts[i], in: registry, runner: runners[accounts[i].tool] ?? nil)
-    }
-    return Dictionary(uniqueKeysWithValues: accounts.enumerated().map { ($1.id, results[$0]!) })
-}
-
 func doctor(fix: Bool) throws -> Bool {
     let registry = try store.load()
-    let health = checkAll(registry)
+    let health = AccountHealth.checkAll(registry, runners: Runner.locateAll())
     var healthy = true
     var emails: [String: String] = [:]
     let width = registry.accounts.map(\.id.count).max() ?? 0
@@ -198,13 +166,12 @@ func doctor(fix: Bool) throws -> Bool {
         h.issues.forEach { say("! \(name)  \($0)") }
     }
     if let shell = ShellInit.Shell.from(path: environment["SHELL"]) {
-        let (file, line) = shell.hook()
-        if !((try? String(contentsOfFile: file, encoding: .utf8)) ?? "").contains(line) {
+        if !ShellInit.isInstalled(shell) {
             say("! shell     \(shell.rawValue) hook not installed, so `claude`/`codex`/`opencode` ignore acc → acc setup")
         }
     }
     if case .outdated(let installed, let old, _) = appStatus() {
-        say("! app       \(installed.replacingOccurrences(of: userHome(), with: "~")) is \(old ?? "older"), acc is \(version) → acc setup")
+        say("! app       \(abbreviatingHome(installed)) is \(old ?? "older"), acc is \(version) → acc setup")
     }
     if !emails.isEmpty { try store.update { r in for (id, email) in emails { r.recordEmail(email, for: id) } } }
     return healthy
@@ -218,13 +185,13 @@ func statusLine() {
     }
     let now = Date()
     let account = registry.account(for: .claude, configDir: environment["CLAUDE_CONFIG_DIR"])
-    var usage = account.flatMap { usages.usage(for: $0) }
+    // Claude Code runs this on every update, so each account's file is read once.
+    var claude = usages.all(registry, tool: .claude)
     if let live = input.usage(at: now), let account {
-        try? usages.store.record(live, for: account.id)
-        usage = live
+        claude[account.id] = (try? usages.store.merge(live, over: claude[account.id], for: account.id, at: now)) ?? live
     }
-    let suggestion = registry.roomiest(.claude, usages.all(registry), excluding: account?.id, at: now)
-    print(StatusLine.render(account: account, usage: usage, input: input, suggestion: suggestion, now: now))
+    let suggestion = registry.roomiest(.claude, claude, excluding: account?.id, at: now)
+    print(StatusLine.render(account: account, usage: account.flatMap { claude[$0.id] }, input: input, suggestion: suggestion, now: now))
 }
 
 /// Starts a tool on its current account. The shell functions from `acc shell-init` call this.
@@ -232,12 +199,13 @@ func statusLine() {
 func launch(_ tool: Tool, _ arguments: [String]) throws -> Never {
     var args = arguments
     let runner = try Runner.locate(tool)
-    if let pinned = environment[tool.spec.variable], !pinned.isEmpty { throw runner.exec(account: nil, arguments: args) }
+    // `@account` is asked for on this command line, so it beats a variable inherited from a parent session.
     if let first = args.first, first.hasPrefix("@"), first.count > 1 {
         let account = try store.load().resolve(String(first.dropFirst()), tool: tool)
         args.removeFirst()
         throw runner.exec(account: account, arguments: args)
     }
+    if let pinned = environment[tool.spec.variable], !pinned.isEmpty { throw runner.exec(account: nil, arguments: args) }
     let registry: Registry
     do {
         registry = try store.load()
@@ -274,9 +242,7 @@ func continueSession(_ ref: String?, sessionID: String?) throws -> Never {
 
 // MARK: setup
 
-let assumeYes = CommandLine.arguments.contains("--yes")
-
-func ask(_ question: String) -> Bool {
+func ask(_ question: String, assumeYes: Bool) -> Bool {
     if assumeYes { say("\(question) yes"); return true }
     guard isTTY else { say("\(question) skipped (not interactive; rerun with --yes)"); return false }
     FileHandle.standardOutput.write(Data("\(question) [Y/n] ".utf8))
@@ -298,7 +264,7 @@ func appStatus() -> AppInstall.Status {
 }
 
 /// Puts the menu bar app in ~/Applications (Homebrew builds it inside its keg), then offers to open it.
-func setupApp() throws {
+func setupApp(assumeYes: Bool) throws {
     var app: String?
     switch appStatus() {
     case .notBundled:
@@ -306,38 +272,33 @@ func setupApp() throws {
     case .inPlace(let path), .current(let path):
         app = path
     case .missing(let bundle):
-        if ask("\nAdd the Consolidatex menu bar app to ~/Applications?") { app = try AppInstall.install(bundle) }
+        if ask("\nAdd the Consolidatex menu bar app to ~/Applications?", assumeYes: assumeYes) { app = try AppInstall.install(bundle) }
     case .outdated(let installed, let old, let bundle):
-        if ask("\nUpdate \(installed.replacingOccurrences(of: userHome(), with: "~")) from \(old ?? "an older version") to \(version)?") {
+        if ask("\nUpdate \(abbreviatingHome(installed)) from \(old ?? "an older version") to \(version)?", assumeYes: assumeYes) {
             runCommand("/usr/bin/pkill", ["-x", "Consolidatex"])
             app = try AppInstall.install(bundle, to: installed)
         }
     }
-    if let app, ask("Open it now?") { runCommand("/usr/bin/open", [app]) }
+    if let app, ask("Open it now?", assumeYes: assumeYes) { runCommand("/usr/bin/open", [app]) }
 }
 
-func setup() throws {
+func setup(assumeYes: Bool) throws {
     say("Consolidatex setup\n")
-    let installed = Tool.allCases.filter { (try? Runner.locate($0)) != nil }
+    let installed = Array(Runner.locateAll().keys)
     for tool in Tool.allCases {
         say(installed.contains(tool) ? "  ✓ \(tool.spec.name)" : "  – \(tool.spec.name) (not installed)")
     }
 
-    var registry = try loadOrEmpty()
+    var registry = try store.loadOrEmpty()
     let candidates = Discovery.find(excluding: registry).filter { installed.contains($0.tool) }
     if candidates.isEmpty {
         say(registry.accounts.isEmpty ? "\nNo existing accounts found. Add one with: acc add <tool>" : "\nNo new accounts to import.")
     } else {
         say("\nFound \(candidates.count) account\(candidates.count == 1 ? "" : "s"):")
         candidates.forEach { say("  \(pad($0.tool.spec.name, 12)) \(pad($0.label, 24)) \($0.configDir ?? "default folder")") }
-        if ask("Import them?") {
+        if ask("Import them?", assumeYes: assumeYes) {
             for c in candidates {
-                var account = registry.newAccount(tool: c.tool, label: c.label)
-                account.configDir = c.configDir
-                if let runner = try? Runner.locate(c.tool), let status = try? runner.authStatus(for: account) {
-                    account.email = status.email
-                }
-                try registry.add(account)
+                let account = try registry.adopt(c)
                 say("  + \(account.id)  \(account.label)\(account.email.map { "  (\($0))" } ?? "")")
             }
             try store.save(registry)
@@ -345,8 +306,8 @@ func setup() throws {
     }
 
     if let shell = ShellInit.Shell.from(path: environment["SHELL"]) {
-        let file = shell.hook().file.replacingOccurrences(of: userHome(), with: "~")
-        if ask("\nAdd the \(shell.rawValue) hook to \(file), so `claude`, `codex` and `opencode` start on the account you pick?") {
+        let file = abbreviatingHome(shell.hook().file)
+        if ask("\nAdd the \(shell.rawValue) hook to \(file), so `claude`, `codex` and `opencode` start on the account you pick?", assumeYes: assumeYes) {
             switch try ShellInit.installHook(shell) {
             case .alreadyInstalled: say("  already there")
             case .installed: say("  added; open a new terminal to use it")
@@ -358,10 +319,8 @@ func setup() throws {
     }
 
     if let primary = registry.primary(for: .claude) {
-        let settings = primary.folder() + "/settings.json"
-        let command = (which("acc") ?? CommandLine.arguments[0]) + " statusline"
-        if ask("\nShow each Claude Code session's account and usage in its status line?") {
-            switch try StatusLineSetup.install(settings: settings, command: command) {
+        if ask("\nShow each Claude Code session's account and usage in its status line?", assumeYes: assumeYes) {
+            switch try StatusLineSetup.install(for: primary, acc: Runner.which("acc") ?? CommandLine.arguments[0]) {
             case .alreadyInstalled: say("  already on")
             case .installed: say("  on (applies to every Claude account sharing \(primary.id)'s settings)")
             case .otherStatusLine(let existing): say("  left alone: you already use `\(existing)`")
@@ -372,7 +331,7 @@ func setup() throws {
     let drifting = registry.accounts.filter { a in
         registry.primary(for: a.tool).map { $0.id != a.id && !Shared.issues(a, primary: $0).isEmpty } ?? false
     }
-    if !drifting.isEmpty, ask("\n\(drifting.count) account\(drifting.count == 1 ? "" : "s") don't share config (rules, settings, skills, MCP servers) with their tool's primary. Share it?") {
+    if !drifting.isEmpty, ask("\n\(drifting.count) account\(drifting.count == 1 ? "" : "s") don't share config (rules, settings, skills, MCP servers) with their tool's primary. Share it?", assumeYes: assumeYes) {
         for account in drifting {
             let primary = registry.primary(for: account.tool)!
             let changes = try Shared.sync(account, primary: primary, runner: try? Runner.locate(account.tool), prune: false)
@@ -380,7 +339,7 @@ func setup() throws {
         }
     }
 
-    try setupApp()
+    try setupApp(assumeYes: assumeYes)
 
     say("\nDone. In a new terminal:")
     say("  acc            pick accounts")
@@ -392,7 +351,6 @@ func setup() throws {
 
 func main() throws {
     var args = Array(CommandLine.arguments.dropFirst())
-    _ = flag("--yes", in: &args)
     let command = args.isEmpty ? nil : args.removeFirst()
 
     switch command {
@@ -459,7 +417,7 @@ func main() throws {
             throw AccError.usage("usage: acc add <claude|codex|opencode> [<name>] [--id <id>] [--dir <folder>]")
         }
         args.removeFirst()
-        var registry = try loadOrEmpty()
+        var registry = try store.loadOrEmpty()
         let label = args.isEmpty ? "\(t.spec.name) \(registry.accounts(for: t).count + 1)" : args.joined(separator: " ")
         var account = registry.newAccount(tool: t, label: label, id: id)
         if let dir { account.configDir = dir }
@@ -520,7 +478,7 @@ func main() throws {
         if !changed { say("everything already shares its primary's config") }
 
     case "setup":
-        try setup()
+        try setup(assumeYes: flag("--yes", in: &args))
 
     case "shell-init":
         guard let name = args.first, let shell = ShellInit.Shell(rawValue: name) else {

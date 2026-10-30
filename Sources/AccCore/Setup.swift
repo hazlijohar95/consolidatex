@@ -10,9 +10,16 @@ public enum ShellInit {
         public func hook(home: String = userHome()) -> (file: String, line: String) {
             switch self {
             case .zsh: (home + "/.zshrc", #"eval "$(acc shell-init zsh)""#)
-            case .bash: (home + "/.bashrc", #"eval "$(acc shell-init bash)""#)
+            case .bash: (Self.bashLoginFile(home: home), #"eval "$(acc shell-init bash)""#)
             case .fish: (home + "/.config/fish/conf.d/acc.fish", "acc shell-init fish | source")
             }
+        }
+
+        /// Terminal on macOS starts bash as a login shell, which skips .bashrc and reads only the
+        /// first of these that exists, so creating .bash_profile would hide an existing .profile.
+        static func bashLoginFile(home: String) -> String {
+            let candidates = [".bash_profile", ".bash_login", ".profile"].map { home + "/" + $0 }
+            return candidates.first(where: FileManager.default.fileExists) ?? candidates[0]
         }
 
         public static func from(path: String?) -> Shell? {
@@ -34,15 +41,22 @@ public enum ShellInit {
         }
     }
 
+    /// Earlier versions put bash's hook in .bashrc; one there still counts, rather than adding a second.
+    public static func isInstalled(_ shell: Shell, home: String = userHome()) -> Bool {
+        let (file, line) = shell.hook(home: home)
+        let files = shell == .bash ? [file, home + "/.bashrc"] : [file]
+        return files.contains { ((try? String(contentsOfFile: $0, encoding: .utf8)) ?? "").contains(line) }
+    }
+
     public enum HookResult: Equatable, Sendable { case alreadyInstalled, installed, replacedLegacy }
 
     /// Adds the hook line to the shell's startup file, once. Replaces the line older acc
     /// versions used (`source ~/.config/acc/acc.zsh`).
     @discardableResult
     public static func installHook(_ shell: Shell, home: String = userHome()) throws -> HookResult {
+        if isInstalled(shell, home: home) { return .alreadyInstalled }
         let (file, line) = shell.hook(home: home)
         let existing = (try? String(contentsOfFile: file, encoding: .utf8)) ?? ""
-        if existing.contains(line) { return .alreadyInstalled }
         var lines = existing.components(separatedBy: "\n")
         if let legacy = lines.firstIndex(where: { $0.contains(".config/acc/acc.zsh") }) {
             lines[legacy] = line
@@ -75,7 +89,9 @@ public enum Discovery {
     public static func find(home: String = userHome(), excluding registry: Registry = .empty) -> [Candidate] {
         let fm = FileManager.default
         let t3 = t3ClaudeLabels(home: home)
-        var found: [Candidate] = []
+        /// `named` is the T3 Code name, if any; `folder` the fallback.
+        var found: [(tool: Tool, configDir: String?, source: String, named: String?, folder: String)] = []
+        let names = ((try? fm.contentsOfDirectory(atPath: home)) ?? []).sorted()
 
         for tool in Tool.allCases {
             let spec = tool.spec
@@ -85,21 +101,27 @@ public enum Discovery {
             case .opencode: home + "/.local/share/opencode"
             }
             if fm.fileExists(atPath: marker) {
-                let label = tool == .claude ? (t3[""] ?? "\(spec.name) (default)") : "\(spec.name) (default)"
-                found.append(Candidate(tool: tool, label: label, configDir: nil, source: "default folder"))
+                found.append((tool, nil, "default folder", tool == .claude ? t3[""] : nil, "\(spec.name) (default)"))
             }
             // Sibling folders such as ~/.claude-work or ~/.codex-personal.
             let prefix = String(spec.newAccountPrefix.dropFirst())  // without the leading "."
-            for name in ((try? fm.contentsOfDirectory(atPath: home)) ?? []).sorted() where name.hasPrefix("." + prefix) {
+            for name in names where name.hasPrefix("." + prefix) {
                 let dir = home + "/" + name
                 guard isAccountFolder(dir, tool: tool) else { continue }
-                let suffix = String(name.dropFirst(prefix.count + 1))
-                let label = (tool == .claude ? t3[canonical(dir)] : nil) ?? suffix
-                found.append(Candidate(tool: tool, label: label, configDir: "~/" + name,
-                                       source: tool == .claude && t3[canonical(dir)] != nil ? "T3 Code" : "~/" + name))
+                let named = tool == .claude ? t3[canonical(dir)] : nil
+                found.append((tool, "~/" + name, named == nil ? "~/" + name : "T3 Code", named, String(name.dropFirst(prefix.count + 1))))
             }
         }
-        return found.filter { c in registry.account(for: c.tool, configDir: c.configDir.map { home + $0.dropFirst(1) }, home: home) == nil }
+        // Named for who is logged in, so "acc2" reads as "hazli"; two logins with one email get their plan added.
+        var taken = Set(registry.accounts.map { $0.label.lowercased() })
+        return found.filter { !registry.knows($0.tool, configDir: $0.configDir, home: home) }.map { f in
+            let identity = Identity.read(Account(id: "", tool: f.tool, label: "", configDir: f.configDir), home: home)
+            let person = identity?.email?.split(separator: "@").first.map(String.init)
+            let options = [f.named, person, person.flatMap { p in identity?.plan.map { "\(p) · \($0)" } }, f.folder]
+            let label = options.compactMap { $0 }.first { !taken.contains($0.lowercased()) } ?? f.folder
+            taken.insert(label.lowercased())
+            return Candidate(tool: f.tool, label: label, configDir: f.configDir, source: f.source)
+        }
     }
 
     static func isAccountFolder(_ dir: String, tool: Tool) -> Bool {
@@ -132,6 +154,11 @@ public enum Discovery {
 /// keeping its formatting. Leaves an existing, different status line alone.
 public enum StatusLineSetup {
     public enum Result: Equatable, Sendable { case alreadyInstalled, installed, otherStatusLine(String) }
+
+    /// For every Claude Code account sharing `primary`'s settings, run by the `acc` at `acc`.
+    public static func install(for primary: Account, acc: String, home: String = userHome()) throws -> Result {
+        try install(settings: primary.folder(home: home) + "/settings.json", command: acc + " statusline")
+    }
 
     public static func install(settings path: String, command: String) throws -> Result {
         let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? "{}\n"

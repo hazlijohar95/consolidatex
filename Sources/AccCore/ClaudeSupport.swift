@@ -8,6 +8,19 @@ public enum ClaudeSupport {
         account.resolvedConfigDir(home: home).map { $0 + "/.claude.json" } ?? home + "/.claude.json"
     }
 
+    /// The login Claude Code caches in the account's state file. `organizationType` names the plan: "claude_team" → "Team".
+    static func identity(_ account: Account, home: String) -> Identity? {
+        struct State: Decodable {
+            struct Login: Decodable { let emailAddress: String?; let organizationType: String? }
+            let oauthAccount: Login?
+        }
+        guard let data = FileManager.default.contents(atPath: stateFile(account, home: home)),
+              let login = (try? JSONDecoder().decode(State.self, from: data))?.oauthAccount
+        else { return nil }
+        let plan = login.organizationType.map { $0.replacingOccurrences(of: "claude_", with: "").capitalized }
+        return Identity(email: login.emailAddress, plan: plan)
+    }
+
     static func authStatus(_ runner: Runner, _ account: Account) throws -> Runner.AuthStatus {
         struct Status: Decodable { let loggedIn: Bool; let email: String? }
         let (code, output) = try runner.capture(["auth", "status"], account: account, includeErrors: false)
@@ -90,8 +103,8 @@ public struct StatusInput: Decodable, Sendable {
 
     public func usage(at now: Date) -> Usage? {
         guard let limits = rate_limits else { return nil }
-        let windows = [("5h", limits.five_hour), ("7d", limits.seven_day)].compactMap { label, w in
-            w.map { Usage.Window(label: label, usedPercentage: $0.used_percentage, resetsAt: Date(timeIntervalSince1970: $0.resets_at)) }
+        let windows = [(300, limits.five_hour), (10_080, limits.seven_day)].compactMap { minutes, w in
+            w.map { Usage.Window(minutes: minutes, usedPercentage: $0.used_percentage, resetsAt: Date(timeIntervalSince1970: $0.resets_at)) }
         }
         return windows.isEmpty ? nil : Usage(windows: windows, recordedAt: now)
     }

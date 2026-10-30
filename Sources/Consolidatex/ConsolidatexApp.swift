@@ -1,5 +1,6 @@
 import AccCore
 import AppKit
+import Combine
 import ServiceManagement
 import SwiftUI
 
@@ -16,27 +17,47 @@ final class Model: ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var state: State = .failed("loading")
+    @Published private(set) var state: State = .failed("loading") {
+        didSet { if let registry { monitor.registry = registry } }
+    }
     @Published private(set) var opensAtLogin = SMAppService.mainApp.status == .enabled
     @Published var lastError: String?
-    @Published private(set) var usage: [String: Usage] = [:]
     @Published private(set) var health: [String: AccountHealth] = [:]
     @Published private(set) var checking = false
     @Published private(set) var logins: [String: Login] = [:]
     @Published private(set) var syncReport: String?
+    @Published private(set) var runners: [Tool: Runner] = [:] {
+        didSet {
+            monitor.runners = runners
+            adoptNewAccounts()
+        }
+    }
+    /// Set when someone picks an account while their terminal doesn't follow picks yet.
+    @Published private(set) var offerTerminal = false
 
     let store = RegistryStore.standard()
-    let runners: [Tool: Runner] = Dictionary(uniqueKeysWithValues: Tool.allCases.compactMap { t in Runner.locateForApp(t).map { (t, $0) } })
-    private lazy var usages = Usages(store: UsageStore(registryStore: store))
+    let monitor: UsageMonitor
+    let shell = ShellInit.Shell.from(path: ProcessInfo.processInfo.environment["SHELL"])
     private var watcher: DispatchSourceFileSystemObject?
-    private var usageTimer: Timer?
+    private var forwarding: AnyCancellable?
+    private var discovery: Timer?
 
     init() {
+        monitor = UsageMonitor(store: store)
+        forwarding = monitor.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        LoginShell.adopt(LoginShell.usualPlaces)
+        locateTools()
+        Task.detached {
+            guard let path = LoginShell.path() else { return }
+            await MainActor.run {
+                LoginShell.adopt(path)
+                self.locateTools()
+            }
+        }
         reload()
         watch()
-        // Usage changes as sessions run and as limits reset, independent of the registry file.
-        usageTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reloadUsage() }
+        discovery = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.adoptNewAccounts() }
         }
     }
 
@@ -47,32 +68,50 @@ final class Model: ObservableObject {
 
     var installedTools: [Tool] { Tool.allCases.filter { runners[$0] != nil } }
 
+    private func locateTools() {
+        runners = Runner.locateAll()
+    }
+
     func reload() {
         do {
-            state = .loaded(try store.load())
-        } catch AccError.registryMissing {
-            state = .loaded(.empty)
+            state = .loaded(try store.loadOrEmpty())
         } catch {
             state = .failed(String(describing: error))
         }
-        reloadUsage()
+        adoptNewAccounts()
     }
 
-    func reloadUsage() {
-        guard let registry else { return }
-        let usages = self.usages
-        Task.detached {
-            let next = usages.all(registry)
-            await MainActor.run { if next != self.usage { self.usage = next } }
+    /// Lists account folders that appear on disk, such as one another app or a manual login created.
+    /// Folders `acc rm` took out stay out.
+    private func adoptNewAccounts() {
+        // Found against what's on disk, so a folder adopted meanwhile isn't adopted twice. Only for
+        // installed tools: a folder left behind by an uninstalled one isn't an account in use.
+        edit { r in
+            for candidate in Discovery.find(excluding: r) where self.runners[candidate.tool] != nil { try r.adopt(candidate) }
         }
+    }
+
+    /// The account being worked on now: active lately and not capped; with several, the fullest.
+    func accountInUse(at now: Date) -> Account? {
+        registry?.accounts
+            .filter { monitor.isActive($0, at: now) && monitor.readings[$0.id].map { !$0.isCapped(at: now) } ?? false }
+            .max { monitor.readings[$0.id]!.load(at: now) < monitor.readings[$1.id]!.load(at: now) }
     }
 
     // MARK: Editing. Every change goes through the store, so terminals see it at once.
 
     private func edit(_ change: (inout Registry) throws -> Void) {
         do {
-            var next = registry ?? .empty
+            // From disk, not `state`: the watcher misses editors that rewrite accounts.json in place.
+            let current = try store.loadOrEmpty()
+            var next = current
             try change(&next)
+            // An unchanged save would wake the file watcher, which reloads and lands back here, and
+            // would clear an error the person hasn't read yet.
+            guard next != current else {
+                state = .loaded(next)
+                return
+            }
             try store.save(next)
             state = .loaded(next)
             lastError = nil
@@ -81,7 +120,38 @@ final class Model: ObservableObject {
         }
     }
 
-    func use(_ account: Account) { edit { try $0.use(account.id) } }
+    func use(_ account: Account) {
+        edit { try $0.use(account.id) }
+        offerTerminal = lastError == nil && !terminalFollows && !UserDefaults.standard.bool(forKey: "terminalOfferDeclined")
+    }
+
+    /// Whether `claude`, `codex` and `opencode` typed in a terminal start on the picked account.
+    var terminalFollows: Bool { shell.map { ShellInit.isInstalled($0) } ?? true }
+
+    /// Adds the shell hook and turns on Claude Code's status line: what makes a pick reach the terminal.
+    func connectTerminal() {
+        guard let shell else { return }
+        // The hook runs `acc`, so a terminal without it on PATH would complain on every start.
+        guard let acc = Runner.which("acc") else {
+            lastError = "acc isn't on your terminal's PATH; install with Homebrew, then try again"
+            return
+        }
+        do {
+            try ShellInit.installHook(shell)
+            if let primary = registry?.primary(for: .claude) {
+                _ = try StatusLineSetup.install(for: primary, acc: acc)
+            }
+            offerTerminal = false
+            lastError = nil
+        } catch {
+            lastError = "Couldn't connect the terminal: \(error)"
+        }
+    }
+
+    func declineTerminal() {
+        offerTerminal = false
+        UserDefaults.standard.set(true, forKey: "terminalOfferDeclined")
+    }
     func rename(_ account: Account, to label: String) {
         guard label != account.label else { return }
         edit { try $0.rename(account.id, to: label) }
@@ -95,6 +165,7 @@ final class Model: ObservableObject {
 
     func useRoomiest() {
         guard let registry else { return }
+        let usage = monitor.readings
         for tool in registry.tools {
             if registry.accounts(for: tool).contains(where: { usage[$0.id] != nil }), let best = registry.byHeadroom(tool, usage).first {
                 use(best)
@@ -103,23 +174,23 @@ final class Model: ObservableObject {
     }
 
     /// Registers a new account, shares its tool's primary config with it, then starts its login.
+    /// Registered first, so discovery already knows the folder while it fills; sharing runs
+    /// `claude mcp add-json` once per server, so it stays off the main thread.
     func add(tool: Tool, label: String, id: String) {
         guard let registry else { return }
         let account = registry.newAccount(tool: tool, label: label, id: id)
-        do {
-            var next = registry
-            try next.add(account)
-            let runner = runners[tool]
-            try runner?.prepare(account)
-            if let primary = registry.primary(for: tool) {
-                _ = try Shared.sync(account, primary: primary, runner: runner, prune: false)
+        let primary = registry.primary(for: tool)
+        let runner = runners[tool]
+        edit { try $0.add(account) }
+        guard lastError == nil else { return }
+        Task.detached {
+            do {
+                try runner?.prepare(account)
+                if let primary { _ = try Shared.sync(account, primary: primary, runner: runner, prune: false) }
+                await MainActor.run { self.logIn(account) }
+            } catch {
+                await MainActor.run { self.lastError = String(describing: error) }
             }
-            try store.save(next)
-            state = .loaded(next)
-            lastError = nil
-            logIn(account)
-        } catch {
-            lastError = String(describing: error)
         }
     }
 
@@ -130,10 +201,7 @@ final class Model: ObservableObject {
         checking = true
         let runners = self.runners
         Task.detached {
-            var results: [String: AccountHealth] = [:]
-            for account in registry.accounts {
-                results[account.id] = AccountHealth.check(account, in: registry, runner: runners[account.tool])
-            }
+            let results = AccountHealth.checkAll(registry, runners: runners)
             await MainActor.run {
                 self.health = results
                 self.checking = false
@@ -183,7 +251,7 @@ final class Model: ObservableObject {
             return
         }
         if account.tool.spec.loginNeedsTerminal {
-            openInTerminal("acc login \(account.id)")
+            openInTerminal("\(Self.acc) login \(account.id)")
             logins[account.id] = .inTerminal
             return
         }
@@ -230,10 +298,15 @@ final class Model: ObservableObject {
         return .failure("timed out waiting for the browser login")
     }
 
+    /// The acc bundled next to this app, quoted for the shell, so Terminal doesn't need it on PATH.
+    private static let acc = Bundle.main.path(forAuxiliaryExecutable: "acc")
+        .map { "'" + $0.replacingOccurrences(of: "'", with: #"'\''"#) + "'" } ?? "acc"
+
     /// Opens Terminal running `command` through a throwaway .command file (no automation permission needed).
+    /// An interactive login shell reads .zshrc too, where the tools' PATH entries usually live.
     func openInTerminal(_ command: String) {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("consolidatex-\(UUID().uuidString).command")
-        let script = "#!/bin/zsh -l\n\(command)\necho\nread -k1 '?Press any key to close…'\n"
+        let script = "#!/bin/zsh -il\nrm -f -- \"$0\"\n\(command)\necho\nread -k1 '?Press any key to close…'\n"
         do {
             try script.write(to: file, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
@@ -277,72 +350,17 @@ final class Model: ObservableObject {
     }
 }
 
-struct AccountMenu: View {
-    @ObservedObject var model: Model
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        switch model.state {
-        case .loaded(let registry) where registry.accounts.isEmpty:
-            Text("No accounts yet")
-            Button("Set Up…") { openManager() }
-        case .loaded(let registry):
-            ForEach(registry.tools, id: \.self) { tool in
-                Section(tool.spec.name) {
-                    ForEach(registry.accounts(for: tool)) { account in
-                        let position = registry.ordered.firstIndex(of: account)! + 1
-                        Toggle(isOn: Binding(get: { registry.isCurrent(account) }, set: { _ in model.use(account) })) {
-                            Text("\(account.label)    \(UsageFormat.summary(model.usage[account.id], tool: tool))")
-                        }
-                        .keyboardShortcut(position <= 9 ? KeyboardShortcut(KeyEquivalent(Character("\(position)")), modifiers: []) : nil)
-                    }
-                }
-            }
-            Divider()
-            Button("Use the Accounts with the Most Room") { model.useRoomiest() }
-                .keyboardShortcut("a")
-        case .failed(let message):
-            Text("⚠︎ \(message)")
-            Text("Run `acc doctor` in a terminal to fix it.")
-        }
-        if let error = model.lastError {
-            Divider()
-            Text("⚠︎ \(error)")
-        }
-        Divider()
-        Button("Manage Accounts…") { openManager() }
-            .keyboardShortcut(",")
-        Toggle("Open at Login", isOn: Binding(get: { model.opensAtLogin }, set: { _ in model.toggleOpenAtLogin() }))
-        Button("Quit") { NSApplication.shared.terminate(nil) }
-            .keyboardShortcut("q")
-    }
-
-    private func openManager() {
-        openWindow(id: "accounts")
-        NSApp.activate(ignoringOtherApps: true)
-    }
-}
-
 @main
 struct ConsolidatexApp: App {
     @StateObject private var model = Model()
 
     var body: some Scene {
         MenuBarExtra {
-            AccountMenu(model: model)
+            UsagePanel(model: model)
         } label: {
-            switch model.state {
-            case .loaded(let registry):
-                // The first tool's current account, which for most people is Claude Code.
-                if let account = registry.tools.first.flatMap(registry.current(for:)) {
-                    let used = model.usage[account.id].map { " \(Int($0.load(at: Date()).rounded()))%" } ?? ""
-                    Text("✳︎ \(account.label)\(used)")
-                } else {
-                    Text("✳︎")
-                }
-            case .failed: Text("✳︎ ⚠︎")
-            }
+            MenuBarLabel(model: model)
         }
+        .menuBarExtraStyle(.window)
 
         Window("Consolidatex", id: "accounts") {
             AccountsView(model: model)

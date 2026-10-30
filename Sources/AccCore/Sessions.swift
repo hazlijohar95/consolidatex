@@ -34,6 +34,18 @@ public enum Sessions {
         }
     }
 
+    /// When a Codex or opencode account last did anything: the newest change to its rollouts or
+    /// database. Nil for Claude Code, whose `TranscriptLog` reports it while reading the same files.
+    public static func lastActive(_ account: Account, home: String = userHome()) -> Date? {
+        let folder = account.folder(home: home)
+        let files: [URL] = switch account.tool {
+        case .claude: []
+        case .codex: CodexSupport.rollouts(home: folder, limit: 5)
+        case .opencode: ["opencode.db", "opencode.db-wal"].map { URL(fileURLWithPath: folder + "/opencode/" + $0) }
+        }
+        return files.compactMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }.max()
+    }
+
     public static func resumeArguments(_ session: Session) -> [String] {
         switch session.account.tool {
         case .claude: ["--resume", session.id]

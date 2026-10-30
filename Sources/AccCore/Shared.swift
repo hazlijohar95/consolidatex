@@ -128,4 +128,25 @@ public struct AccountHealth: Equatable, Sendable {
         }
         return health
     }
+
+    /// Checks every account at once: each check runs the tool, so they overlap rather than queue.
+    public static func checkAll(_ registry: Registry, runners: [Tool: Runner]) -> [String: AccountHealth] {
+        let accounts = registry.accounts
+        let results = Results<AccountHealth>(count: accounts.count)
+        DispatchQueue.concurrentPerform(iterations: accounts.count) { i in
+            results[i] = check(accounts[i], in: registry, runner: runners[accounts[i].tool])
+        }
+        return Dictionary(uniqueKeysWithValues: accounts.indices.map { (accounts[$0].id, results[$0]!) })
+    }
+}
+
+/// Per-account results written from concurrentPerform's threads.
+final class Results<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [T?]
+    init(count: Int) { values = Array(repeating: nil, count: count) }
+    subscript(i: Int) -> T? {
+        get { lock.withLock { values[i] } }
+        set { lock.withLock { values[i] = newValue } }
+    }
 }

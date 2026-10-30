@@ -28,7 +28,8 @@ func tempHome() -> String {
     @Test func positionsFollowDisplayOrder() throws {
         #expect(try sample.resolve("3").id == "cto")
         #expect(try sample.resolve("4").id == "work")
-        #expect(try sample.resolve("2", tool: .codex).id == "side")
+        #expect(try sample.resolve("5", tool: .codex).id == "side")
+        #expect(throws: AccError.noMatch("2")) { try sample.resolve("2", tool: .codex) }
     }
 
     @Test func byIDLabelFragmentEmail() throws {
@@ -179,5 +180,31 @@ func tempHome() -> String {
         #expect(sample.suggestedID(for: "42") == "acc-42")
         #expect(sample.newAccount(tool: .codex, label: "Client A").configDir == "~/.codex-client-a")
         #expect(sample.newAccount(tool: .opencode, label: "Mine").configDir == "~/.opencode-mine")
+    }
+}
+
+@Suite struct Removing {
+    @Test func removedFoldersStayKnownUntilAddedBack() throws {
+        var r = sample
+        try r.remove("side")
+        #expect(r.knows(.codex, configDir: "/abs/side/", home: "/h"))
+        #expect(!r.knows(.codex, configDir: "/abs/other", home: "/h"))
+        try r.add(Account(id: "side", tool: .codex, label: "Side", configDir: "/abs/side"))
+        #expect(r.removed.isEmpty)
+    }
+
+    @Test func registriesFromBeforeRemovedStillLoad() throws {
+        let store = tempStore()
+        try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true)
+        try Data(#"{"version":2,"current":{"claude":"t"},"accounts":[{"id":"t","tool":"claude","label":"T"}]}"#.utf8).write(to: store.file)
+        #expect(try store.load().removed == [])
+    }
+
+    @Test func adoptTakesTheCachedEmail() throws {
+        let home = tempHome()
+        write(#"{"oauthAccount":{"emailAddress":"w@cynco.io"}}"#, to: home + "/.claude-work/.claude.json")
+        var r = Registry.empty
+        let a = try r.adopt(Discovery.Candidate(tool: .claude, label: "work", configDir: "~/.claude-work", source: "~/.claude-work"), home: home)
+        #expect(a.id == "work" && a.email == "w@cynco.io" && r.current[.claude] == "work")
     }
 }

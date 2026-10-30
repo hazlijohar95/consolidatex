@@ -58,6 +58,11 @@ public struct RegistryStore: Sendable {
         }
     }
 
+    /// The registry, or an empty one before the first account exists.
+    public func loadOrEmpty() throws -> Registry {
+        do { return try load() } catch AccError.registryMissing { return .empty }
+    }
+
     @discardableResult
     public func update(_ change: (inout Registry) throws -> Void) throws -> Registry {
         var registry = try load()

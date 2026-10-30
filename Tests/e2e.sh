@@ -18,7 +18,7 @@ cat > $T/bin/claude <<'EOF'
 state="${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/.claude.json}"; state="${state:-$HOME/.claude.json}"
 if [ "$1 $2" = "auth status" ]; then
   if [ -n "$CLAUDE_CONFIG_DIR" ] && [ -e "$CLAUDE_CONFIG_DIR/LOGGED_OUT" ]; then echo '{"loggedIn":false}'; exit 1; fi
-  echo "{\"loggedIn\":true,\"email\":\"$(basename "${CLAUDE_CONFIG_DIR:-default}")@test\"}"; exit 0
+  echo "{\"loggedIn\":true,\"email\":\"$(basename "${CLAUDE_CONFIG_DIR:-default}" | sed 's/^\.claude-//')@test\"}"; exit 0
 fi
 if [ "$1" = mcp ]; then
   exec /usr/bin/python3 -I - "$state" "$2" "$5" "$6" <<'PY'
@@ -51,8 +51,8 @@ chmod +x $T/bin/claude $T/bin/codex $T/bin/opencode
 mkdir -p $H/.claude/skills $H/.claude-cto $H/.codex $H/.codex-side $H/.local/share/opencode $H/.t3/userdata
 print rules > $H/.claude/CLAUDE.md
 print '{"model": "opus"}' > $H/.claude/settings.json
-print '{"mcpServers":{"docs":{"type":"http","url":"https://d"}}}' > $H/.claude.json
-print '{"mcpServers":{"mine":{"type":"http","url":"https://m"}}}' > $H/.claude-cto/.claude.json
+print '{"mcpServers":{"docs":{"type":"http","url":"https://d"}},"oauthAccount":{"emailAddress":"default@test"}}' > $H/.claude.json
+print '{"mcpServers":{"mine":{"type":"http","url":"https://m"}},"oauthAccount":{"emailAddress":"cto@test"}}' > $H/.claude-cto/.claude.json
 print 'model = "gpt"' > $H/.codex/config.toml
 print '{}' > $H/.codex-side/auth.json
 print '{"providerInstances":{"a":{"driver":"claudeAgent","displayName":"Haz (team)","enabled":true}}}' > $H/.t3/userdata/settings.json
@@ -74,7 +74,7 @@ check 'nothing yet'                       "$(acc ls 2>&1)" 'acc: no accounts yet
 acc setup --yes > $T/setup.txt
 check 'setup imports existing accounts'   "$(acc ls | col '$2, $3')" $'claude haz-team\nclaude cto\ncodex codex-default\ncodex side\nopencode opencode-default'
 check 'setup keeps T3 names'              "$(acc ls | grep haz-team | col '$4, $5')" 'Haz (team)'
-check 'setup records emails'              "$(acc ls | grep ' cto ' | col '$5')" '.claude-cto@test'
+check 'setup records emails'              "$(acc ls | grep ' cto ' | col '$5')" 'cto@test'
 check 'setup hooks the shell once'        "$(grep -c 'acc shell-init zsh' $H/.zshrc)" 1
 check 'setup turns on the status line'    "$(grep -c 'acc statusline' $H/.claude/settings.json)" 1
 check 'setup shares Claude config'        "$(cat $H/.claude-cto/CLAUDE.md)" rules
@@ -97,6 +97,10 @@ check '@ one-off'                         "$(sh 'codex @side x')" "CODEX=$H/.cod
 check '@ does not switch'                 "$(current codex)" codex-default
 check '@ resolves within the tool'        "$(sh 'claude @side' ; echo "exit $?")" $'acc: no account matches \'side\' (see: acc ls)\nexit 1'
 check 'explicit variable wins'            "$(sh 'CODEX_HOME=/pinned codex')" 'CODEX=/pinned ARGS='
+check '@ beats an inherited variable'     "$(sh 'CODEX_HOME=/pinned codex @side x')" "CODEX=$H/.codex-side ARGS=x"
+check 'tool arguments pass through as is'  "$(sh 'claude --yes x')" "CFG=$H/.claude-cto ARGS=--yes x"
+check 'positions match what ls shows'     "$(acc codex 4 | cut -d: -f2 | awk '{print $1}')" side
+acc codex 3 >/dev/null
 check 'ambiguous is rejected'             "$(acc default 2>&1; echo "exit $?")" $'acc: \'default\' matches haz-team, codex-default, opencode-default; be more specific\nexit 1'
 check 'unknown flag is a usage error'     "$(acc --bogus >/dev/null 2>&1; echo $?)" 2
 
@@ -153,6 +157,8 @@ check 'rm refuses a current account'      "$(acc rm cto 2>&1; echo "exit $?")" $
 check 'rm refuses a primary with others'  "$(acc rm codex-default 2>&1)" "acc: 'codex-default' is the primary Codex account; the others share its config, so remove them first"
 acc rm client-a >/dev/null
 check 'rm keeps the folder'               "$([[ -d $H/.codex-client-a ]] && echo yes) $(acc ls | grep -c client-a)" 'yes 0'
+acc setup --yes >/dev/null
+check 'setup leaves removed folders out'  "$(acc ls | grep -c client-a)" 0
 
 # --- resilience
 print 'not json' > $ACC_HOME/accounts.json

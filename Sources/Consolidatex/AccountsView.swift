@@ -107,7 +107,7 @@ struct AccountRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 16)
-            UsageBars(usage: model.usage[account.id], tool: account.tool)
+            UsageBars(usage: model.monitor.readings[account.id], tool: account.tool)
             trailing(health)
                 .frame(width: 128, alignment: .trailing)
         }
@@ -192,7 +192,7 @@ struct UsageBars: View {
             if let usage, !usage.windows.isEmpty {
                 ForEach(usage.windows, id: \.label) { window in bar(window, now) }
             } else {
-                Text(tool == .opencode ? "no usage data" : "no usage yet").font(.caption).foregroundStyle(.tertiary)
+                Text(UsageFormat.empty(tool: tool)).font(.caption).foregroundStyle(.tertiary)
             }
         }
         .frame(width: 134)
@@ -204,7 +204,7 @@ struct UsageBars: View {
         return HStack(spacing: 6) {
             Text(window.label).font(.caption2).foregroundStyle(.secondary).frame(width: 22, alignment: .leading)
             ProgressView(value: min(used, 100), total: 100)
-                .tint(used >= 90 ? .red : used >= 70 ? .orange : .green)
+                .tint(Theme.level(used))
             Text("\(Int(used.rounded()))%").font(.caption2).monospacedDigit().frame(width: 30, alignment: .trailing)
         }
     }
@@ -253,7 +253,7 @@ struct AddAccountSheet: View {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(tool.spec.loginNeedsTerminal ? "Add and Log In in Terminal" : "Add and Log In") {
                     model.add(tool: tool, label: label.trimmingCharacters(in: .whitespaces), id: id)
-                    if model.lastError == nil { dismiss() }
+                    dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(problem != nil)

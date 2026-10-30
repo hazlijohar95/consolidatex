@@ -8,22 +8,22 @@ public enum CodexSupport {
         // `codex login status` reports on stderr and exits 0 only when logged in.
         let (code, _) = try runner.capture(["login", "status"], account: account)
         let identity = identity(home: account.folder())
-        return Runner.AuthStatus(loggedIn: code == 0, email: identity.email, detail: identity.plan)
+        return Runner.AuthStatus(loggedIn: code == 0, email: identity?.email, detail: identity?.plan)
     }
 
     /// Email and plan from the id_token claims in auth.json (absent when Codex keeps the login in the keychain).
-    public static func identity(home: String) -> (email: String?, plan: String?) {
+    static func identity(home: String) -> Identity? {
         guard let data = FileManager.default.contents(atPath: home + "/auth.json"),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tokens = root["tokens"] as? [String: Any],
               let idToken = tokens["id_token"] as? String
-        else { return (nil, nil) }
+        else { return nil }
         let parts = idToken.split(separator: ".")
         guard parts.count >= 2, let claims = decodeBase64URL(String(parts[1])),
               let payload = try? JSONSerialization.jsonObject(with: claims) as? [String: Any]
-        else { return (nil, nil) }
+        else { return nil }
         let auth = payload["https://api.openai.com/auth"] as? [String: Any]
-        return (payload["email"] as? String, auth?["chatgpt_plan_type"] as? String)
+        return Identity(email: payload["email"] as? String, plan: (auth?["chatgpt_plan_type"] as? String)?.capitalized)
     }
 
     static func decodeBase64URL(_ s: String) -> Data? {
@@ -65,20 +65,37 @@ public enum CodexSupport {
     /// A token_count event line → Usage. Only the main "codex" limit counts toward the subscription.
     public static func parseTokenCount(_ line: String) -> Usage? {
         struct Window: Decodable { let used_percent: Double; let window_minutes: Int?; let resets_at: Double? }
-        struct Limits: Decodable { let limit_id: String?; let primary: Window?; let secondary: Window? }
+        struct Limits: Decodable { let limit_id: String?; let plan_type: String?; let primary: Window?; let secondary: Window? }
         struct Payload: Decodable { let type: String; let rate_limits: Limits? }
         struct Event: Decodable { let timestamp: String?; let payload: Payload }
         guard let event = try? JSONDecoder().decode(Event.self, from: Data(line.utf8)),
-              event.payload.type == "token_count", let limits = event.payload.rate_limits,
-              limits.limit_id == nil || limits.limit_id == "codex"
+              event.payload.type == "token_count", let limits = event.payload.rate_limits
         else { return nil }
-        let windows = [limits.primary, limits.secondary].compactMap { w -> Usage.Window? in
-            guard let w, let resets = w.resets_at else { return nil }
-            return Usage.Window(label: Usage.Window.label(minutes: w.window_minutes ?? 0), usedPercentage: w.used_percent,
-                                resetsAt: Date(timeIntervalSince1970: resets))
+        let window = { (w: Window?) in w.map { RateWindow(usedPercent: $0.used_percent, minutes: $0.window_minutes, resetsAt: $0.resets_at) } }
+        return usage(limitID: limits.limit_id, plan: limits.plan_type, primary: window(limits.primary), secondary: window(limits.secondary),
+                     at: event.timestamp.flatMap { ISO8601DateFormatter.withFractions.date(from: $0) } ?? Date())
+    }
+
+    /// One rate-limit window as Codex reports it, in a session file or from its app server.
+    struct RateWindow {
+        let usedPercent: Double
+        let minutes: Int?
+        let resetsAt: Double?
+    }
+
+    /// Codex's limits for the subscription. Other limit ids are per-model extras; the subscription's
+    /// is "codex", or unnamed on older versions. Without a duration, the first window is 5 hours on
+    /// paid plans and a month on Free and Go. A window without a reset time is left out: an old
+    /// reading of it could never be seen to reset, and would hold the account at its percentage.
+    static func usage(limitID: String?, plan: String?, primary: RateWindow?, secondary: RateWindow?, at: Date) -> Usage? {
+        guard limitID == nil || limitID == "codex" else { return nil }
+        let monthly = plan == "free" || plan == "go"
+        let windows = [(primary, monthly ? 43_200 : 300), (secondary, 10_080)].compactMap { window, fallback -> Usage.Window? in
+            guard let window, let resetsAt = window.resetsAt else { return nil }
+            return Usage.Window(minutes: window.minutes ?? fallback, usedPercentage: window.usedPercent,
+                                resetsAt: Date(timeIntervalSince1970: resetsAt))
         }
-        let recorded = event.timestamp.flatMap { ISO8601DateFormatter.withFractions.date(from: $0) } ?? Date()
-        return windows.isEmpty ? nil : Usage(windows: windows, recordedAt: recorded)
+        return windows.isEmpty ? nil : Usage(windows: windows, recordedAt: at)
     }
 
     /// Codex sessions started in `cwd`, read from the session_meta line at the top of each rollout.
@@ -134,6 +151,8 @@ public enum CodexSupport {
 }
 
 extension ISO8601DateFormatter {
+    nonisolated(unsafe) static let plain = ISO8601DateFormatter()
+
     nonisolated(unsafe) static let withFractions: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

@@ -19,7 +19,10 @@ public struct Account: Codable, Equatable, Identifiable, Sendable {
     }
 
     /// The value for the tool's variable, or nil to leave it unset.
-    public func resolvedConfigDir(home: String = userHome()) -> String? {
+    public func resolvedConfigDir(home: String = userHome()) -> String? { Self.resolve(configDir, home: home) }
+
+    /// A `configDir` as written in the registry, with "~" expanded; nil stays nil (the default folder).
+    public static func resolve(_ configDir: String?, home: String = userHome()) -> String? {
         guard let configDir else { return nil }
         if configDir == "~" { return home }
         if configDir.hasPrefix("~/") { return home + configDir.dropFirst(1) }
@@ -40,15 +43,39 @@ public struct Registry: Codable, Equatable, Sendable {
         "rename", "rm", "run", "setup", "shell-init", "statusline", "sync", "ui", "use", "version", "kiro",
     ])
 
+    /// A folder `acc rm` took out of the list, so discovery doesn't bring it back.
+    public struct Removed: Codable, Equatable, Sendable {
+        public let tool: Tool
+        public let configDir: String?
+
+        /// The same folder however it's written: "~/.claude-x" and "/Users/me/.claude-x" match.
+        func matches(_ tool: Tool, _ configDir: String?, home: String = userHome()) -> Bool {
+            self.tool == tool && Account.resolve(self.configDir, home: home).map(canonical) == Account.resolve(configDir, home: home).map(canonical)
+        }
+    }
+
     public var version: Int
     /// The account new sessions of each tool use.
     public var current: [Tool: String]
     public var accounts: [Account]
+    public var removed: [Removed]
 
-    public init(current: [Tool: String], accounts: [Account]) {
+    public init(current: [Tool: String], accounts: [Account], removed: [Removed] = []) {
         self.version = Registry.currentVersion
         self.current = current
         self.accounts = accounts
+        self.removed = removed
+    }
+
+    private enum CodingKeys: String, CodingKey { case version, current, accounts, removed }
+
+    /// `removed` came later; registries written before it have none.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(Int.self, forKey: .version)
+        current = try c.decode([Tool: String].self, forKey: .current)
+        accounts = try c.decode([Account].self, forKey: .accounts)
+        removed = try c.decodeIfPresent([Removed].self, forKey: .removed) ?? []
     }
 
     public static let empty = Registry(current: [:], accounts: [])
@@ -93,6 +120,10 @@ public struct Registry: Codable, Equatable, Sendable {
             if accounts.filter({ $0.tool == tool && $0.configDir == nil }).count > 1 {
                 problems.append("more than one \(tool.spec.name) account uses the default folder (configDir: null)")
             }
+            let folders = accounts.filter { $0.tool == tool }.compactMap(\.configDir)
+            for folder in Set(folders) where folders.filter({ $0 == folder }).count > 1 {
+                problems.append("more than one \(tool.spec.name) account uses \(folder)")
+            }
             let hasAccounts = accounts.contains { $0.tool == tool }
             if let id = current[tool] {
                 if account(id: id)?.tool != tool {
@@ -109,15 +140,16 @@ public struct Registry: Codable, Equatable, Sendable {
         id.range(of: #"^[a-z][a-z0-9-]*$"#, options: .regularExpression) != nil
     }
 
-    /// Finds an account from what a person types: its position in `ordered` (1-based), its id,
-    /// or a fragment of its id, label or email that matches exactly one account (of `tool`, if given).
+    /// Finds an account from what a person types: its position in `ordered` (1-based, as `acc ls`
+    /// shows it even when filtered to one tool), its id, or a fragment of its id, label or email
+    /// that matches exactly one account (of `tool`, if given).
     public func resolve(_ ref: String, tool: Tool? = nil) throws -> Account {
         let q = ref.trimmingCharacters(in: .whitespaces).lowercased()
-        let pool = ordered.filter { tool == nil || $0.tool == tool }
         if let n = Int(q) {
-            guard pool.indices.contains(n - 1) else { throw AccError.noMatch(ref) }
-            return pool[n - 1]
+            guard ordered.indices.contains(n - 1), tool == nil || ordered[n - 1].tool == tool else { throw AccError.noMatch(ref) }
+            return ordered[n - 1]
         }
+        let pool = ordered.filter { tool == nil || $0.tool == tool }
         if let exact = pool.first(where: { $0.id == q }) ?? pool.first(where: { $0.label.lowercased() == q }) { return exact }
         let hits = pool.filter { a in
             [a.id, a.label, a.email ?? ""].contains { !q.isEmpty && $0.lowercased().contains(q) }
@@ -127,6 +159,12 @@ public struct Registry: Codable, Equatable, Sendable {
         case 0: throw AccError.noMatch(ref)
         default: throw AccError.ambiguous(ref, hits.map(\.id))
         }
+    }
+
+    /// Whether `configDir` is one of `tool`'s accounts, or was removed from the list.
+    public func knows(_ tool: Tool, configDir: String?, home: String = userHome()) -> Bool {
+        account(for: tool, configDir: Account.resolve(configDir, home: home), home: home) != nil
+            || removed.contains { $0.matches(tool, configDir, home: home) }
     }
 
     /// The account a running tool belongs to, from the value of its variable (nil or empty = default).
@@ -139,6 +177,11 @@ public struct Registry: Codable, Equatable, Sendable {
 
 func canonical(_ path: String) -> String {
     URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+}
+
+/// `path` with the home folder written as "~", for showing to people.
+public func abbreviatingHome(_ path: String, home: String = userHome()) -> String {
+    path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
 }
 
 /// $HOME, as the tools resolve it, falling back to the account's home directory.

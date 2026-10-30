@@ -17,7 +17,7 @@ class Consolidatex < Formula
     system "swift", "build", *args, "--product", "Consolidatex"
     products = Utils.safe_popen_read("swift", "build", *args, "--show-bin-path").chomp
     system "script/bundle", products, prefix/"Consolidatex.app", version.to_s
-    bin.install_symlink prefix/"Consolidatex.app/Contents/Resources/acc"
+    bin.install_symlink prefix/"Consolidatex.app/Contents/MacOS/acc"
   end
 
   def caveats

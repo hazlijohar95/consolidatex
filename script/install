@@ -20,7 +20,7 @@ pkill -x Consolidatex && was_running=1 || true
 rm -rf "$app"
 mkdir -p "${app:h}" $bin_dir
 mv "$staging" "$app"
-ln -sf "$app/Contents/Resources/acc" $bin_dir/acc
+ln -sf "$app/Contents/MacOS/acc" $bin_dir/acc
 
 print "installed Consolidatex $version"
 print "  $app"

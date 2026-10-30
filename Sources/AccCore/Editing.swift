@@ -8,6 +8,7 @@ extension Registry {
         guard self.account(id: account.id) == nil else { throw AccError.duplicateID(account.id) }
         var next = self
         next.accounts.append(account)
+        next.removed.removeAll { $0.matches(account.tool, account.configDir) }
         if next.current[account.tool] == nil { next.current[account.tool] = account.id }
         try next.validate()
         self = next
@@ -36,6 +37,19 @@ extension Registry {
         }
         accounts.removeAll { $0.id == id }
         if others.isEmpty { current[account.tool] = nil }
+        if !removed.contains(where: { $0.matches(account.tool, account.configDir) }) {
+            removed.append(Removed(tool: account.tool, configDir: account.configDir))
+        }
+    }
+
+    /// Adds an account found on disk, labelled as discovery found it and with the email its tool cached.
+    @discardableResult
+    public mutating func adopt(_ found: Discovery.Candidate, home: String = userHome()) throws -> Account {
+        var account = newAccount(tool: found.tool, label: found.label)
+        account.configDir = found.configDir
+        account.email = Identity.read(account, home: home)?.email
+        try add(account)
+        return account
     }
 
     /// Moves an account to `index` among the accounts of its own tool (positions drive the 1-9 shortcuts).

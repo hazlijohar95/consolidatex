@@ -29,19 +29,18 @@ public struct Runner: Sendable {
         if let override = environment["ACC_\(tool.rawValue.uppercased())"], !override.isEmpty {
             return Runner(tool: tool, executable: override)
         }
-        for dir in (environment["PATH"] ?? "").split(separator: ":") {
-            let candidate = "\(dir)/\(tool.spec.command)"
-            if FileManager.default.isExecutableFile(atPath: candidate) { return Runner(tool: tool, executable: candidate) }
-        }
-        throw AccError.toolNotFound(tool.spec.command)
+        guard let executable = which(tool.spec.command, environment: environment) else { throw AccError.toolNotFound(tool.spec.command) }
+        return Runner(tool: tool, executable: executable)
     }
 
-    /// Finds the tool for a GUI app, whose PATH lacks the user's shell additions.
-    public static func locateForApp(_ tool: Tool) -> Runner? {
-        var env = ProcessInfo.processInfo.environment
-        let extra = ["\(userHome())/.local/bin", "\(userHome())/.opencode/bin", "/opt/homebrew/bin", "/usr/local/bin"]
-        env["PATH"] = (extra + [env["PATH"] ?? ""]).joined(separator: ":")
-        return try? locate(tool, environment: env)
+    /// The installed tools, by tool.
+    public static func locateAll(environment: [String: String] = ProcessInfo.processInfo.environment) -> [Tool: Runner] {
+        Dictionary(uniqueKeysWithValues: Tool.allCases.compactMap { t in (try? locate(t, environment: environment)).map { (t, $0) } })
+    }
+
+    /// The first executable called `name` on PATH.
+    public static func which(_ name: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+        (environment["PATH"] ?? "").split(separator: ":").map { "\($0)/\(name)" }.first(where: FileManager.default.isExecutableFile)
     }
 
     /// The environment with the tool's variable set for `account`, or removed for its default account.
