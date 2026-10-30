@@ -1,0 +1,97 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches acc's version
+        run: |
+          want=$(sed -n 's/^let version = "\(.*\)"/\1/p' Sources/acc/main.swift)
+          [ "v$want" = "$VERSION" ] || { echo "tag $VERSION but Sources/acc/main.swift says $want"; exit 1; }
+
+      - name: Test
+        run: script/test
+
+      - name: Build universal binaries
+        run: |
+          swift build -c release --arch arm64 --arch x86_64 --product acc
+          swift build -c release --arch arm64 --arch x86_64 --product Consolidatex
+          echo "PRODUCTS=$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)" >> "$GITHUB_ENV"
+
+      # Signing and notarization turn on once these secrets exist:
+      #   MACOS_CERTIFICATE (base64 .p12 of a "Developer ID Application" cert), MACOS_CERTIFICATE_PASSWORD,
+      #   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (an app-specific password).
+      - name: Import signing certificate
+        id: signing
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERTIFICATE" ]; then echo "identity=-" >> "$GITHUB_OUTPUT"; exit 0; fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p "" "$keychain"
+          security set-keychain-settings "$keychain"
+          security unlock-keychain -p "" "$keychain"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+
+      - name: Bundle
+        run: script/bundle "$PRODUCTS" dist/Consolidatex.app "${VERSION#v}" "${{ steps.signing.outputs.identity }}"
+
+      - name: Notarize
+        if: steps.signing.outputs.identity != '-'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          ditto -c -k --keepParent dist/Consolidatex.app dist/notarize.zip
+          xcrun notarytool submit dist/notarize.zip --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple dist/Consolidatex.app
+          rm dist/notarize.zip
+
+      - name: Package
+        run: |
+          cd dist
+          ditto -c -k --keepParent Consolidatex.app "Consolidatex-$VERSION.zip"
+          shasum -a 256 "Consolidatex-$VERSION.zip" | tee "Consolidatex-$VERSION.zip.sha256"
+          sha=$(cut -d' ' -f1 "Consolidatex-$VERSION.zip.sha256")
+          sed -e "s/__VERSION__/${VERSION#v}/" -e "s/__SHA256__/$sha/" ../packaging/homebrew/consolidatex.rb > consolidatex.rb
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$VERSION" --generate-notes \
+            "dist/Consolidatex-$VERSION.zip" "dist/Consolidatex-$VERSION.zip.sha256" dist/consolidatex.rb
+
+      # Needs HOMEBREW_TAP_TOKEN: a token with contents:write on <owner>/homebrew-tap.
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then echo "no HOMEBREW_TAP_TOKEN; skipping tap update"; exit 0; fi
+          git clone "https://x-access-token:$HOMEBREW_TAP_TOKEN@github.com/${{ github.repository_owner }}/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          cp dist/consolidatex.rb tap/Casks/consolidatex.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/consolidatex.rb
+          git commit -m "consolidatex ${VERSION#v}"
+          git push

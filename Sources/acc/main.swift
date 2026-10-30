@@ -25,7 +25,7 @@ let usage = """
       acc sync [--prune]      link shared config and mirror MCP servers from the primary;
                               --prune also removes MCP servers the primary does not have
       acc statusline          Claude Code status line: shows the account and records its usage
-      acc ui                  open the Claude Accounts window
+      acc ui                  open the Consolidatex window
       acc dir [<account>]     print CLAUDE_CONFIG_DIR for an account (empty = default)
       acc version
 
@@ -288,11 +288,11 @@ func main() throws {
     case "ui":
         let open = Process()
         open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        open.arguments = ["claude-accounts://manage"]
+        open.arguments = ["consolidatex://manage"]
         try open.run()
         open.waitUntilExit()
         if open.terminationStatus != 0 {
-            throw AccError.system("could not open Claude Accounts; is it installed in ~/Applications? (run script/install)")
+            throw AccError.system("could not open Consolidatex; is it installed in ~/Applications? (run script/install)")
         }
 
     case "use":

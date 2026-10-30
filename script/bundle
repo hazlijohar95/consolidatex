@@ -1,0 +1,22 @@
+#!/bin/zsh
+# Assembles Consolidatex.app from built products. Used by script/install and CI.
+#   script/bundle <products dir> <output .app path> <version> [signing identity]
+# Without an identity the app is ad-hoc signed (fine for local builds).
+set -eu
+products=$1 out=$2 version=$3 identity=${4:--}
+root=${0:A:h:h}
+
+rm -rf "$out"
+mkdir -p "$out/Contents/MacOS" "$out/Contents/Resources"
+install -m 755 "$products/Consolidatex" "$out/Contents/MacOS/Consolidatex"
+# The CLI ships inside the app so one download (and the Homebrew cask) provides both.
+install -m 755 "$products/acc" "$out/Contents/Resources/acc"
+sed "s/__VERSION__/$version/g" "$root/app/Info.plist" > "$out/Contents/Info.plist"
+
+if [[ $identity == - ]]; then
+  codesign --force --sign - "$out/Contents/Resources/acc"
+  codesign --force --sign - "$out"
+else
+  codesign --force --options runtime --timestamp --sign "$identity" "$out/Contents/Resources/acc"
+  codesign --force --options runtime --timestamp --sign "$identity" "$out"
+fi

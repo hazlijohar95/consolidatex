@@ -6,7 +6,7 @@ cd ${0:A:h:h}
 # Command Line Tools ship swift-testing outside the default search path; Xcode does not need this.
 clt=/Library/Developer/CommandLineTools/Library/Developer
 testing_flags=()
-if [[ -d $clt/Frameworks/Testing.framework ]]; then
+if [[ $(xcode-select -p) == /Library/Developer/CommandLineTools && -d $clt/Frameworks/Testing.framework ]]; then
   testing_flags=(-Xswiftc -F$clt/Frameworks -Xlinker -F$clt/Frameworks
     -Xlinker -rpath -Xlinker $clt/Frameworks -Xlinker -rpath -Xlinker $clt/usr/lib)
 fi

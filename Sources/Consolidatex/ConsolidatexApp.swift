@@ -271,7 +271,7 @@ struct AccountMenu: View {
 }
 
 @main
-struct ClaudeAccountsApp: App {
+struct ConsolidatexApp: App {
     @StateObject private var model = Model()
 
     var body: some Scene {
@@ -286,11 +286,11 @@ struct ClaudeAccountsApp: App {
             }
         }
 
-        Window("Claude Accounts", id: "accounts") {
+        Window("Consolidatex", id: "accounts") {
             AccountsView(model: model)
         }
         .windowResizability(.contentMinSize)
-        // `acc ui` opens claude-accounts://manage.
+        // `acc ui` opens consolidatex://manage.
         .handlesExternalEvents(matching: ["manage"])
     }
 }

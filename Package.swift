@@ -7,7 +7,7 @@ let package = Package(
     targets: [
         .target(name: "AccCore"),
         .executableTarget(name: "acc", dependencies: ["AccCore"]),
-        .executableTarget(name: "ClaudeAccounts", dependencies: ["AccCore"]),
+        .executableTarget(name: "Consolidatex", dependencies: ["AccCore"]),
         .testTarget(name: "AccCoreTests", dependencies: ["AccCore"]),
     ]
 )

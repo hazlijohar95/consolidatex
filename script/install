@@ -1,45 +1,29 @@
 #!/bin/zsh
-# Builds and installs acc, the zsh wrapper and Claude Accounts.app. Safe to re-run;
-# re-running after `git pull` is how you update.
+# Builds from source and installs Consolidatex.app plus the `acc` CLI. Safe to re-run;
+# re-running after `git pull` is how you update a source install.
 set -eu
 cd ${0:A:h:h}
 
 bin_dir=${ACC_BIN_DIR:-$HOME/.local/bin}
-config_dir=${ACC_HOME:-$HOME/.config/acc}
-app="${ACC_APP_DIR:-$HOME/Applications}/Claude Accounts.app"
+app="${ACC_APP_DIR:-$HOME/Applications}/Consolidatex.app"
 
 swift build -c release --product acc
-swift build -c release --product ClaudeAccounts
+swift build -c release --product Consolidatex
 release=$(swift build -c release --show-bin-path)
 version=$($release/acc version | cut -d' ' -f2)
 
-mkdir -p $bin_dir $config_dir
-install -m 755 $release/acc $bin_dir/acc.new && mv -f $bin_dir/acc.new $bin_dir/acc
-install -m 644 shell/acc.zsh $config_dir/acc.zsh
-
-staging=$(mktemp -d "${TMPDIR:-/tmp}/acc-app.XXXXXX")/Claude\ Accounts.app
-mkdir -p "$staging/Contents/MacOS"
-install -m 755 $release/ClaudeAccounts "$staging/Contents/MacOS/ClaudeAccounts"
-sed "s/__VERSION__/$version/g" app/Info.plist > "$staging/Contents/Info.plist"
-codesign --force --sign - "$staging" 2>/dev/null
+staging=$(mktemp -d "${TMPDIR:-/tmp}/consolidatex.XXXXXX")/Consolidatex.app
+script/bundle $release "$staging" $version
 
 was_running=0
-pkill -x ClaudeAccounts && was_running=1 || true
+pkill -x Consolidatex && was_running=1 || true
 rm -rf "$app"
-mkdir -p "${app:h}"
+mkdir -p "${app:h}" $bin_dir
 mv "$staging" "$app"
+ln -sf "$app/Contents/Resources/acc" $bin_dir/acc
 
-print "installed acc $version"
-print "  $bin_dir/acc"
-print "  $config_dir/acc.zsh"
+print "installed Consolidatex $version"
 print "  $app"
-
-if ! grep -q 'config/acc/acc.zsh' ~/.zshrc 2>/dev/null; then
-  print "\nAdd this line to ~/.zshrc, then open a new terminal:\n  source ~/.config/acc/acc.zsh"
-fi
-if [[ ! -f $config_dir/accounts.json ]]; then
-  print "\nNo accounts yet. Register your first one with: acc add <id> --label <name>"
-fi
-if (( was_running )); then
-  open "$app" 2>/dev/null || print "\nStart the menu bar app with: open \"$app\""
-fi
+print "  $bin_dir/acc -> app"
+(( was_running )) && { open "$app" 2>/dev/null || print "start it with: open \"$app\""; }
+print "\nFirst time? Run: acc setup"

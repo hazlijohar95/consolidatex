@@ -55,7 +55,7 @@ The primary account (the one with `configDir: null`) owns `CLAUDE.md`, `settings
 ## Install and update
 
 ```
-./script/install            # builds and installs acc, the zsh wrapper and Claude Accounts.app
+./script/install            # builds and installs acc, the zsh wrapper and Consolidatex.app
 echo 'source ~/.config/acc/acc.zsh' >> ~/.zshrc   # once
 ```
 
@@ -65,7 +65,7 @@ To update, run `git pull && ./script/install`. To test, run `./script/test`, whi
 
 - `Sources/AccCore`: the model. It holds `Registry` (validation and resolving what you type to an account), `RegistryStore` (load, validate, atomic save) and `Claude` (`auth status`, exec). The CLI and the app share it, so there is one parser and one set of rules.
 - `Sources/acc`: the CLI.
-- `Sources/ClaudeAccounts`: the menu bar app. It watches the registry directory and shows a ⚠︎ with the reason if the registry is invalid.
+- `Sources/Consolidatex`: the menu bar app. It watches the registry directory and shows a ⚠︎ with the reason if the registry is invalid.
 - `shell/acc.zsh`: the `claude` wrapper. An explicit `CLAUDE_CONFIG_DIR` always wins. If `acc` is missing or the registry is broken, `claude` still starts on the default account and prints a warning.
 
 ## Registry
