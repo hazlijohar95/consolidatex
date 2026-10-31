@@ -184,6 +184,9 @@ func write(_ text: String, to path: String) {
               to: home + "/a/sessions/2026/10/29/rollout-2026-10-29T09-00-00-11111111-2222-3333-4444-555555555555.jsonl")
 
         #expect(CodexSupport.latestUsage(home: home + "/a")?.load(at: t0) == 61.5)
+        // A reading stored after the rollouts were last written leaves nothing newer in them.
+        #expect(CodexSupport.latestUsage(home: home + "/a", after: Date() + 60) == nil)
+        #expect(CodexSupport.latestUsage(home: home + "/a", after: Date() - 60)?.load(at: t0) == 61.5)
         let registry = Registry(current: [.codex: "work"], accounts: [work, side])
         let sessions = Sessions.forProject("/work/app", in: registry, home: home)
         #expect(sessions.map(\.id) == [uuid])

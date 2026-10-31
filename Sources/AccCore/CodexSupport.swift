@@ -52,12 +52,19 @@ public enum CodexSupport {
         return found
     }
 
-    /// The most recent rate limits Codex recorded for this account.
-    public static func latestUsage(home: String, scanning limit: Int = 25) -> Usage? {
-        for file in rollouts(home: home, limit: limit) {
+    /// The most recent rate limits Codex recorded for this account. A rollout last written before
+    /// `after` holds nothing newer than that, so it isn't read.
+    public static func latestUsage(home: String, after: Date? = nil, scanning limit: Int = 25) -> Usage? {
+        for file in rollouts(home: home, limit: limit) where after.map({ modified(file) > $0 }) ?? true {
             if let usage = lastTokenCount(in: file, bytes: 256 * 1024) { return usage }
         }
         return nil
+    }
+
+    private static func modified(_ file: URL) -> Date {
+        var info = stat()
+        guard stat(file.path, &info) == 0 else { return .distantPast }
+        return Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1e9)
     }
 
     /// The newest token_count event in the last `bytes` of a rollout. The app reads this every 15

@@ -172,10 +172,14 @@ public struct Usages: Sendable {
 
     public func usage(for account: Account) -> Usage? {
         switch account.tool {
-        case .claude: store.load(account.id)
+        case .claude:
+            return store.load(account.id)
         // Live reads land in the store; Codex's own session files may be newer.
-        case .codex: [store.load(account.id), CodexSupport.latestUsage(home: account.folder())].compactMap { $0 }.max { $0.recordedAt < $1.recordedAt }
-        case .opencode: nil
+        case .codex:
+            let stored = store.load(account.id)
+            return [stored, CodexSupport.latestUsage(home: account.folder(), after: stored?.recordedAt)].compactMap { $0 }.max { $0.recordedAt < $1.recordedAt }
+        case .opencode:
+            return nil
         }
     }
 
