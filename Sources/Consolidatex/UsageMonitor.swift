@@ -82,17 +82,18 @@ final class UsageMonitor: ObservableObject {
     /// button) skips the regular spacing of live reads but still honours a server Retry-After.
     func refresh(force: Bool = false) {
         if force { spinning = true }
-        readLocal(rereadIdentities: force)
+        readLocal(force: force)
         fetchLive(force: force)
     }
 
-    /// Usage files, activity and logins: cheap and local, so it never waits on the network.
-    private func readLocal(rereadIdentities: Bool = false) {
+    /// Usage files, activity and logins: cheap and local, so it never waits on the network. `force`
+    /// rereads logins and looks for new transcripts now rather than within the minute.
+    private func readLocal(force: Bool = false) {
         guard !readingLocal else { return }
         readingLocal = true
         let registry = self.registry, usages = self.usages, now = Date()
         // Logins rarely change and Claude Code's state file can run to megabytes, so only new accounts are read.
-        let unread = registry.accounts.filter { rereadIdentities || !identitiesRead.contains($0.id) }
+        let unread = registry.accounts.filter { force || !identitiesRead.contains($0.id) }
         identitiesRead.formUnion(unread.map(\.id))
         let logs = registry.accounts(for: .claude).map { ($0.id, self.logs[$0.id] ?? TranscriptLog(folder: $0.folder())) }
         let known = identities
@@ -102,11 +103,13 @@ final class UsageMonitor: ObservableObject {
             let last = sampledAt[entry.0]
             if now.timeIntervalSince(last ?? .distantPast) >= UsageHistory.spacing { due[entry.0] = last ?? now - UsageHistory.spacing }
         }
+        // A sample counts every reply up to now, so an account with a reading to sample looks for new transcripts first.
+        let complete = Set(sampleFrom.keys.filter { readings[$0] != nil })
         Task.detached {
             // One account at a time: the first read after launch goes through every transcript of
             // the last 5 hours, and in parallel the peaks would add up. Later reads are only new lines.
             var activity: [String: TranscriptLog.Activity] = [:]
-            for (id, log) in logs { activity[id] = await log.activity(at: now) }
+            for (id, log) in logs { activity[id] = await log.activity(at: now, complete: force || complete.contains(id)) }
             var spent: [String: [Origin: Int]] = [:]
             // Up to `now`: a reply written while this read runs belongs to the next sample.
             for (id, log) in logs { if let since = sampleFrom[id] { spent[id] = await log.tokens(since: since, until: now) } }

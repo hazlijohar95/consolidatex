@@ -405,6 +405,17 @@ func write(_ text: String, to path: String) {
         let second = await log.activity(at: now)
         #expect((second.outputTokens, second.requests) == (45, 2))
     }
+
+    @Test func findsNewTranscriptsWithinAMinuteAndWhenAskedForEveryReply() async {
+        let home = tempHome(), now = Date()
+        write(line("a", 10, at: now - 60) + "\n", to: home + "/projects/p/s.jsonl")
+        let log = TranscriptLog(folder: home)
+        #expect(await log.activity(at: now).outputTokens == 10)
+        write(line("b", 5, at: now - 30) + "\n", to: home + "/projects/q/s/subagents/agent.jsonl")
+        #expect(await log.activity(at: now, complete: true).outputTokens == 15)
+        write(line("c", 1, at: now - 20) + "\n", to: home + "/projects/r/later.jsonl")
+        #expect(await log.activity(at: now + 60).outputTokens == 16)
+    }
 }
 
 @Suite struct CodexLive {

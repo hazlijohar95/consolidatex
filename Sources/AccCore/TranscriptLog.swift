@@ -53,22 +53,36 @@ public actor TranscriptLog {
 
     private let projects: String
     private var files: [String: FileState] = [:]
+    /// The newest change to any transcript the last walk found, or to a known one since.
+    private var lastWrite: Date?
+    private var walkedAt = Date.distantPast
 
     public init(folder: String) {
         projects = folder + "/projects"
     }
 
-    public func activity(at now: Date, over window: TimeInterval = 5 * 3600) -> Activity {
+    /// Finding new transcripts opens every folder under projects/, so it happens once a minute, or
+    /// when `complete` asks; in between only the transcripts already known are checked.
+    public func activity(at now: Date, over window: TimeInterval = 5 * 3600, complete: Bool = false) -> Activity {
         let cutoff = now - window
         var recent: [String: FileState] = [:]
-        var lastWrite: Date?
-        Self.transcripts(in: projects) { modified, path in
+        func found(_ modified: Date, _ path: () -> String) {
             lastWrite = max(lastWrite ?? modified, modified)
             guard modified > cutoff else { return }
             let file = path()
-            recent[file] = Self.readAppended(file, after: self.files[file] ?? FileState(), cutoff: cutoff)
+            recent[file] = Self.readAppended(file, after: files[file] ?? FileState(), cutoff: cutoff)
         }
-        self.files = recent
+        if complete || now.timeIntervalSince(walkedAt) >= 60 {
+            walkedAt = now
+            lastWrite = nil
+            Self.transcripts(in: projects, found)
+        } else {
+            for file in files.keys {
+                var info = stat()
+                if stat(file, &info) == 0 { found(Self.modified(info)) { file } }
+            }
+        }
+        files = recent
         var activity = Activity(lastWrite: lastWrite)
         activity.requests = spending(after: cutoff, until: .distantFuture) { activity.byOrigin[$0, default: 0] += $1 }
         return activity
@@ -119,12 +133,16 @@ public actor TranscriptLog {
                     if type == DT_DIR {
                         if !name.elementsEqual(dot), !name.elementsEqual(dotDot) { folders.append(path()) }
                     } else if isTranscript {
-                        visit(Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1e9), path)
+                        visit(modified(info), path)
                     }
                 }
             }
         }
         for folder in folders { transcripts(in: folder, visit) }
+    }
+
+    private static func modified(_ info: stat) -> Date {
+        Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1e9)
     }
 
     private static let dot = Array(".".utf8), dotDot = Array("..".utf8), jsonl = Array(".jsonl".utf8)
