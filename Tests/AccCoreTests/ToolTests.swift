@@ -144,6 +144,16 @@ func write(_ text: String, to path: String) {
         #expect(u?.load(at: t0) == 61.5)
     }
 
+    @Test func theNewestTokenCountInATailWins() throws {
+        let file = tempHome() + "/rollout.jsonl", url = URL(fileURLWithPath: file)
+        let older = line.replacingOccurrences(of: #""used_percent":24.0"#, with: #""used_percent":10.0"#)
+        write([older, line, #"{"type":"event_msg","payload":{"type":"agent_message"}}"#].joined(separator: "\n") + "\n", to: file)
+        #expect(CodexSupport.lastTokenCount(in: url, bytes: 1 << 20)?.windows.first?.usedPercentage == 24)
+        // A tail that starts inside the newest event can't read it, so it reads nothing rather than half a line.
+        let size = try #require(try FileManager.default.attributesOfItem(atPath: file)[.size] as? Int)
+        #expect(CodexSupport.lastTokenCount(in: url, bytes: size - older.utf8.count - 10) == nil)
+    }
+
     @Test func ignoresOtherLimitsAndEvents() {
         #expect(CodexSupport.parseTokenCount(line.replacingOccurrences(of: #""limit_id":"codex""#, with: #""limit_id":"codex_other""#)) == nil)
         #expect(CodexSupport.parseTokenCount(#"{"type":"event_msg","payload":{"type":"agent_message"}}"#) == nil)

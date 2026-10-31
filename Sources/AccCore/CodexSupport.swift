@@ -55,11 +55,33 @@ public enum CodexSupport {
     /// The most recent rate limits Codex recorded for this account.
     public static func latestUsage(home: String, scanning limit: Int = 25) -> Usage? {
         for file in rollouts(home: home, limit: limit) {
-            for line in tailLines(of: file, bytes: 256 * 1024).reversed() where line.contains("\"token_count\"") {
-                if let usage = parseTokenCount(line) { return usage }
-            }
+            if let usage = lastTokenCount(in: file, bytes: 256 * 1024) { return usage }
         }
         return nil
+    }
+
+    /// The newest token_count event in the last `bytes` of a rollout. The app reads this every 15
+    /// seconds, so lines are found on the raw bytes and only those naming token_count become text.
+    static func lastTokenCount(in file: URL, bytes: Int) -> Usage? {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        let start = size > UInt64(bytes) ? size - UInt64(bytes) : 0
+        guard (try? handle.seek(toOffset: start)) != nil, let tail = try? handle.readToEnd() else { return nil }
+        return tail.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) -> Usage? in
+            let key: StaticString = #""token_count""#
+            var lines: [Range<Int>] = []
+            var from = 0
+            while from < buffer.count, let hit = memmem(buffer.baseAddress! + from, buffer.count - from, key.utf8Start, key.utf8CodeUnitCount) {
+                let at = buffer.baseAddress!.distance(to: hit)
+                let lineStart = buffer[..<at].lastIndex(of: 0x0A).map { $0 + 1 } ?? 0
+                let lineEnd = buffer[at...].firstIndex(of: 0x0A) ?? buffer.count
+                // The first line of a tail that starts mid-file is cut off.
+                if lineStart > 0 || start == 0 { lines.append(lineStart..<lineEnd) }
+                from = lineEnd
+            }
+            return lines.reversed().lazy.compactMap { parseTokenCount(String(decoding: buffer[$0], as: UTF8.self)) }.first
+        }
     }
 
     /// A token_count event line → Usage. Only the main "codex" limit counts toward the subscription.
