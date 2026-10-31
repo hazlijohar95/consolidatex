@@ -55,15 +55,10 @@ public enum CodexSupport {
     /// The most recent rate limits Codex recorded for this account. A rollout last written before
     /// `after` holds nothing newer than that, so it isn't read.
     public static func latestUsage(home: String, after: Date? = nil, scanning limit: Int = 25) -> Usage? {
-        for file in rollouts(home: home, limit: limit) where after.map({ modified(file.path) > $0 }) ?? true {
+        for file in rollouts(home: home, limit: limit) where after.map({ (modificationDate(file.path) ?? .distantPast) > $0 }) ?? true {
             if let usage = lastTokenCount(in: file, bytes: 256 * 1024) { return usage }
         }
         return nil
-    }
-
-    private static func modified(_ path: String) -> Date {
-        var info = stat()
-        return stat(path, &info) == 0 ? Date(info.st_mtimespec) : .distantPast
     }
 
     /// The newest token_count event in the last `bytes` of a rollout. The app reads this every 15
@@ -101,7 +96,7 @@ public enum CodexSupport {
         else { return nil }
         let window = { (w: Window?) in w.map { RateWindow(usedPercent: $0.used_percent, minutes: $0.window_minutes, resetsAt: $0.resets_at) } }
         return usage(limitID: limits.limit_id, plan: limits.plan_type, primary: window(limits.primary), secondary: window(limits.secondary),
-                     at: event.timestamp.flatMap { try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse($0) } ?? Date())
+                     at: event.timestamp.flatMap { try? Date.iso8601.parse($0) } ?? Date())
     }
 
     /// One rate-limit window as Codex reports it, in a session file or from its app server.
@@ -140,7 +135,8 @@ public enum CodexSupport {
     /// The rollout written most recently. Names sort by start time, so a long session started
     /// yesterday can still be the live one; the newest ten by name are compared by write time.
     static func latestConversation(_ account: Account, home: String) -> Sessions.Conversation? {
-        rollouts(home: account.folder(home: home), limit: 10).max { modified($0.path) < modified($1.path) }.flatMap(conversation(in:))
+        let modified = { (url: URL) in modificationDate(url.path) ?? .distantPast }
+        return rollouts(home: account.folder(home: home), limit: 10).max { modified($0) < modified($1) }.flatMap(conversation(in:))
     }
 
     /// The conversation id and folder from the session_meta line at the top of a rollout.

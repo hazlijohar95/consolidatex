@@ -77,10 +77,7 @@ public actor TranscriptLog {
             lastWrite = nil
             Self.transcripts(in: projects, found)
         } else {
-            for file in files.keys {
-                var info = stat()
-                if stat(file, &info) == 0 { found(Date(info.st_mtimespec)) { file } }
-            }
+            for file in files.keys { if let modified = modificationDate(file) { found(modified) { file } } }
         }
         files = recent
         var activity = Activity(lastWrite: lastWrite)
@@ -173,11 +170,15 @@ public actor TranscriptLog {
             guard count > 0 else { break }
             let end = filled + count
             var start = 0, searchFrom = filled
-            while let newline = memchr(base + searchFrom, Int32(UInt8(ascii: "\n")), end - searchFrom) {
-                let lineEnd = base.distance(to: newline)
-                read(UnsafeRawBufferPointer(rebasing: buffer[start..<lineEnd]), into: &state, cutoff: cutoff)
-                start = lineEnd + 1
-                searchFrom = start
+            // On older systems JSONDecoder parses through Foundation objects that wait for release, and a
+            // background task never drains them, so each read drains its own; otherwise a first read holds all of them.
+            autoreleasepool {
+                while let newline = memchr(base + searchFrom, Int32(UInt8(ascii: "\n")), end - searchFrom) {
+                    let lineEnd = base.distance(to: newline)
+                    read(UnsafeRawBufferPointer(rebasing: buffer[start..<lineEnd]), into: &state, cutoff: cutoff)
+                    start = lineEnd + 1
+                    searchFrom = start
+                }
             }
             state.offset += UInt64(start)
             // A line still being written has no newline yet; the next refresh reads it.

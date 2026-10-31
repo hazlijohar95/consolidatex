@@ -186,6 +186,12 @@ extension Date {
     }
 }
 
+/// When the file at `path` was last written, or nil when it can't be read.
+func modificationDate(_ path: String) -> Date? {
+    var info = stat()
+    return stat(path, &info) == 0 ? Date(info.st_mtimespec) : nil
+}
+
 /// `path` with the home folder written as "~", for showing to people.
 public func abbreviatingHome(_ path: String, home: String = userHome()) -> String {
     path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
