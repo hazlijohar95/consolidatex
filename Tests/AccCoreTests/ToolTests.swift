@@ -393,6 +393,10 @@ func write(_ text: String, to path: String) {
         #expect(Identity.read(Account(id: "d", tool: .claude, label: "D", configDir: nil), home: home) == Identity(email: "me@cynco.io", plan: "Max"))
         write(#"{"oauthAccount": null}"#, to: home + "/.claude.json")
         #expect(Identity.read(Account(id: "d", tool: .claude, label: "D", configDir: nil), home: home) == nil)
+        // Only the top-level key counts: not a prompt that says it, nor an object of the same name further in.
+        write(#"{"projects": {"/p": {"history": [{"display": "oauthAccount"}], "cache": {"oauthAccount": {"emailAddress": "old@cynco.io"}}}}, "oauthAccount": {"emailAddress": "me@cynco.io"}}"#,
+              to: home + "/.claude.json")
+        #expect(Identity.read(Account(id: "d", tool: .claude, label: "D", configDir: nil), home: home)?.email == "me@cynco.io")
     }
 }
 
@@ -417,6 +421,13 @@ func write(_ text: String, to path: String) {
         try handle.close()
         let second = await log.activity(at: now)
         #expect((second.outputTokens, second.requests) == (45, 2))
+    }
+
+    @Test func readsBlankLinesAndLinesLongerThanTheBuffer() async {
+        let home = tempHome(), now = Date()
+        let long = line("long", 7, at: now - 30).replacingOccurrences(of: #""message":{"#, with: #""message":{"content":"\#(String(repeating: "x", count: 3 << 20))","#)
+        write(["", line("a", 10, at: now - 60), "", long, line("b", 5, at: now - 20)].joined(separator: "\n") + "\n", to: home + "/projects/p/s.jsonl")
+        #expect(await TranscriptLog(folder: home).activity(at: now).outputTokens == 22)
     }
 
     @Test func findsNewTranscriptsWithinAMinuteAndWhenAskedForEveryReply() async {

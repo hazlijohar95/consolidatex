@@ -11,7 +11,7 @@ public enum ClaudeSupport {
     /// The login Claude Code caches in the account's state file. `organizationType` names the plan: "claude_team" → "Team".
     static func identity(_ account: Account, home: String) -> Identity? {
         struct Login: Decodable { let emailAddress: String?; let organizationType: String?; let accountUuid: String?; let organizationUuid: String? }
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: stateFile(account, home: home)), options: .alwaysMapped),
+        guard let data = FileManager.default.contents(atPath: stateFile(account, home: home)),
               let object = object(named: "oauthAccount", in: data),
               let login = try? JSONDecoder().decode(Login.self, from: object)
         else { return nil }
@@ -20,32 +20,44 @@ public enum ClaudeSupport {
                         login: login.accountUuid.map { Identity.Login(account: $0, organization: login.organizationUuid) })
     }
 
-    /// The JSON object under `"name":` in `json`, found on the bytes. The state file runs to hundreds
-    /// of kilobytes and only the login in it is wanted, so the rest is never parsed.
+    /// The JSON object under the top-level key `name` in `json`, found on the bytes. The state file
+    /// runs to hundreds of kilobytes and only the login in it is wanted, so the rest is never parsed.
     static func object(named name: String, in json: Data) -> Data? {
         json.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> Data? in
             let key = Array("\"\(name)\"".utf8)
-            guard let base = bytes.baseAddress, let hit = memmem(base, bytes.count, key, key.count) else { return nil }
-            var i = base.distance(to: hit) + key.count
-            func skipSpace() { while i < bytes.count, [0x20, 0x09, 0x0A, 0x0D].contains(bytes[i]) { i += 1 } }
-            skipSpace()
-            guard i < bytes.count, bytes[i] == UInt8(ascii: ":") else { return nil }
-            i += 1
-            skipSpace()
-            guard i < bytes.count, bytes[i] == UInt8(ascii: "{") else { return nil }
-            let start = i
-            var depth = 0, inString = false, escaped = false
+            let quote = UInt8(ascii: "\""), backslash = UInt8(ascii: "\\")
+            func endOfString(_ i: Int) -> Int {
+                var j = i + 1
+                while j < bytes.count, bytes[j] != quote { j += bytes[j] == backslash ? 2 : 1 }
+                return min(j + 1, bytes.count)
+            }
+            func skipSpace(_ i: Int) -> Int {
+                var j = i
+                while j < bytes.count, [0x20, 0x09, 0x0A, 0x0D].contains(bytes[j]) { j += 1 }
+                return j
+            }
+            var depth = 0, i = 0
+            var start: Int?
             while i < bytes.count {
                 let byte = bytes[i]
-                if inString {
-                    if escaped { escaped = false } else if byte == UInt8(ascii: "\\") { escaped = true } else if byte == UInt8(ascii: "\"") { inString = false }
-                } else if byte == UInt8(ascii: "\"") {
-                    inString = true
-                } else if byte == UInt8(ascii: "{") {
+                if byte == quote {
+                    let string = i..<endOfString(i)
+                    i = string.upperBound
+                    // A top-level string is a key when a colon follows it.
+                    guard start == nil, depth == 1, string.count == key.count, bytes[string].elementsEqual(key) else { continue }
+                    let colon = skipSpace(i)
+                    guard colon < bytes.count, bytes[colon] == UInt8(ascii: ":") else { continue }
+                    let value = skipSpace(colon + 1)
+                    guard value < bytes.count, bytes[value] == UInt8(ascii: "{") else { return nil }
+                    start = value
+                    i = value
+                    continue
+                }
+                if byte == UInt8(ascii: "{") || byte == UInt8(ascii: "[") {
                     depth += 1
-                } else if byte == UInt8(ascii: "}") {
+                } else if byte == UInt8(ascii: "}") || byte == UInt8(ascii: "]") {
                     depth -= 1
-                    if depth == 0 { return Data(bytes[start...i]) }
+                    if let start, depth == 1 { return Data(bytes[start...i]) }
                 }
                 i += 1
             }

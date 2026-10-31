@@ -126,13 +126,14 @@ public actor TranscriptLog {
                     let isTranscript = name.count > jsonl.count && name.suffix(jsonl.count).elementsEqual(jsonl)
                     var type = Int32(entry.pointee.d_type)
                     var info = stat()
-                    if isTranscript || type == DT_UNKNOWN {
-                        guard fstatat(dirfd(dir), cName, &info, 0) == 0 else { return }
-                        if type == DT_UNKNOWN { type = info.st_mode & S_IFMT == S_IFDIR ? DT_DIR : DT_REG }
+                    // Some file systems don't say what an entry is. A link to a folder is never followed.
+                    if type == DT_UNKNOWN {
+                        guard fstatat(dirfd(dir), cName, &info, AT_SYMLINK_NOFOLLOW) == 0 else { return }
+                        type = info.st_mode & S_IFMT == S_IFDIR ? DT_DIR : DT_REG
                     }
                     if type == DT_DIR {
                         if !name.elementsEqual(dot), !name.elementsEqual(dotDot) { folders.append(path()) }
-                    } else if isTranscript {
+                    } else if isTranscript, fstatat(dirfd(dir), cName, &info, 0) == 0 {
                         visit(Date(info.st_mtimespec), path)
                     }
                 }
@@ -159,7 +160,8 @@ public actor TranscriptLog {
         defer { buffer.deallocate() }
         // The bytes before `filled` start a line that the last read didn't finish.
         var filled = 0
-        while true {
+        // Up to the size read above; what is appended meanwhile is the next refresh's.
+        while state.offset + UInt64(filled) < size {
             if filled == buffer.count {
                 let larger = UnsafeMutableRawBufferPointer.allocate(byteCount: buffer.count * 2, alignment: 1)
                 larger.copyMemory(from: UnsafeRawBufferPointer(buffer))
