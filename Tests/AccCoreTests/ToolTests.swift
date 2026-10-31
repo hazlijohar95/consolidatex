@@ -381,6 +381,16 @@ func write(_ text: String, to path: String) {
         #expect(Identity.read(Account(id: "d", tool: .claude, label: "D", configDir: nil), home: home)?.plan == "Max")
         #expect(Identity.read(Account(id: "x", tool: .claude, label: "X", configDir: "~/.claude-x"), home: home) == nil)
     }
+
+    @Test func claudeLoginIsFoundAmongTheRestOfTheStateFile() {
+        let home = tempHome()
+        // The key inside a string is escaped, and the braces inside the login's own strings don't count.
+        write(#"{"tips": {"x": "a \"oauthAccount\": {} here"}, "oauthAccount" : {"emailAddress": "me@cynco.io", "organizationType": "claude_max", "note": "}{\"}"}, "after": {}}"#,
+              to: home + "/.claude.json")
+        #expect(Identity.read(Account(id: "d", tool: .claude, label: "D", configDir: nil), home: home) == Identity(email: "me@cynco.io", plan: "Max"))
+        write(#"{"oauthAccount": null}"#, to: home + "/.claude.json")
+        #expect(Identity.read(Account(id: "d", tool: .claude, label: "D", configDir: nil), home: home) == nil)
+    }
 }
 
 @Suite struct Transcripts {

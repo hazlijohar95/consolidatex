@@ -10,16 +10,47 @@ public enum ClaudeSupport {
 
     /// The login Claude Code caches in the account's state file. `organizationType` names the plan: "claude_team" → "Team".
     static func identity(_ account: Account, home: String) -> Identity? {
-        struct State: Decodable {
-            struct Login: Decodable { let emailAddress: String?; let organizationType: String?; let accountUuid: String?; let organizationUuid: String? }
-            let oauthAccount: Login?
-        }
-        guard let data = FileManager.default.contents(atPath: stateFile(account, home: home)),
-              let login = (try? JSONDecoder().decode(State.self, from: data))?.oauthAccount
+        struct Login: Decodable { let emailAddress: String?; let organizationType: String?; let accountUuid: String?; let organizationUuid: String? }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: stateFile(account, home: home)), options: .alwaysMapped),
+              let object = object(named: "oauthAccount", in: data),
+              let login = try? JSONDecoder().decode(Login.self, from: object)
         else { return nil }
         let plan = login.organizationType.map { $0.replacingOccurrences(of: "claude_", with: "").capitalized }
         return Identity(email: login.emailAddress, plan: plan,
                         login: login.accountUuid.map { Identity.Login(account: $0, organization: login.organizationUuid) })
+    }
+
+    /// The JSON object under `"name":` in `json`, found on the bytes. The state file runs to hundreds
+    /// of kilobytes and only the login in it is wanted, so the rest is never parsed.
+    static func object(named name: String, in json: Data) -> Data? {
+        json.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> Data? in
+            let key = Array("\"\(name)\"".utf8)
+            guard let base = bytes.baseAddress, let hit = memmem(base, bytes.count, key, key.count) else { return nil }
+            var i = base.distance(to: hit) + key.count
+            func skipSpace() { while i < bytes.count, [0x20, 0x09, 0x0A, 0x0D].contains(bytes[i]) { i += 1 } }
+            skipSpace()
+            guard i < bytes.count, bytes[i] == UInt8(ascii: ":") else { return nil }
+            i += 1
+            skipSpace()
+            guard i < bytes.count, bytes[i] == UInt8(ascii: "{") else { return nil }
+            let start = i
+            var depth = 0, inString = false, escaped = false
+            while i < bytes.count {
+                let byte = bytes[i]
+                if inString {
+                    if escaped { escaped = false } else if byte == UInt8(ascii: "\\") { escaped = true } else if byte == UInt8(ascii: "\"") { inString = false }
+                } else if byte == UInt8(ascii: "\"") {
+                    inString = true
+                } else if byte == UInt8(ascii: "{") {
+                    depth += 1
+                } else if byte == UInt8(ascii: "}") {
+                    depth -= 1
+                    if depth == 0 { return Data(bytes[start...i]) }
+                }
+                i += 1
+            }
+            return nil
+        }
     }
 
     /// Each Claude account's login, read from its state file.
