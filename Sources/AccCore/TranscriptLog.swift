@@ -66,7 +66,7 @@ public actor TranscriptLog {
             lastWrite = max(lastWrite ?? modified, modified)
             guard modified > cutoff else { return }
             let file = path()
-            recent[file] = Self.readAppended(URL(fileURLWithPath: file), after: self.files[file] ?? FileState(), cutoff: cutoff)
+            recent[file] = Self.readAppended(file, after: self.files[file] ?? FileState(), cutoff: cutoff)
         }
         self.files = recent
         var activity = Activity(lastWrite: lastWrite)
@@ -130,60 +130,68 @@ public actor TranscriptLog {
     private static let dot = Array(".".utf8), dotDot = Array("..".utf8), jsonl = Array(".jsonl".utf8)
 
     /// A file shorter than what was read before has been rewritten, so it's read again from the start.
-    private static func readAppended(_ file: URL, after previous: FileState, cutoff: Date) -> FileState {
-        guard let handle = try? FileHandle(forReadingFrom: file) else { return previous }
-        defer { try? handle.close() }
-        guard let size = try? handle.seekToEnd() else { return previous }
+    private static func readAppended(_ path: String, after previous: FileState, cutoff: Date) -> FileState {
+        let file = open(path, O_RDONLY)
+        guard file >= 0 else { return previous }
+        defer { close(file) }
+        var info = stat()
+        guard fstat(file, &info) == 0 else { return previous }
+        let size = UInt64(info.st_size)
         var state = size < previous.offset ? FileState() : previous
         state.responses = state.responses.filter { $0.value.at > cutoff }
-        guard size > state.offset, (try? handle.seek(toOffset: state.offset)) != nil else { return state }
-        var pending = Data()
-        var more = true
-        while more {
-            // Foundation hands back reads and parses for later release, and a background task never
-            // gets around to it, so each chunk drains its own; otherwise a long first read holds all of them.
-            autoreleasepool {
-                guard let chunk = try? handle.read(upToCount: 1 << 20), !chunk.isEmpty else { more = false; return }
-                // Bytes already searched hold no newline, so a line longer than a chunk is searched once.
-                var searchFrom = pending.endIndex
-                // Most lines are shorter than a chunk, so usually nothing is left over to copy into.
-                if pending.isEmpty {
-                    pending = chunk
-                    searchFrom = pending.startIndex
-                } else {
-                    pending.append(chunk)
-                }
-                var start = pending.startIndex
-                // A line still being written has no newline yet; the next read picks it up.
-                while let end = pending[searchFrom...].firstIndex(of: newline) {
-                    read(pending[start..<end], into: &state)
-                    start = pending.index(after: end)
-                    searchFrom = start
-                }
-                state.offset += UInt64(pending.distance(from: pending.startIndex, to: start))
-                pending = start == pending.endIndex ? Data() : Data(pending[start...])
+        guard size > state.offset else { return state }
+        // Read a megabyte at a time into one buffer; a line longer than the buffer doubles it.
+        var buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: Int(min(size - state.offset, 1 << 20)), alignment: 1)
+        defer { buffer.deallocate() }
+        // The bytes before `filled` start a line that the last read didn't finish.
+        var filled = 0
+        while true {
+            if filled == buffer.count {
+                let larger = UnsafeMutableRawBufferPointer.allocate(byteCount: buffer.count * 2, alignment: 1)
+                larger.copyMemory(from: UnsafeRawBufferPointer(buffer))
+                buffer.deallocate()
+                buffer = larger
             }
+            let base = buffer.baseAddress!
+            let count = pread(file, base + filled, buffer.count - filled, off_t(state.offset) + off_t(filled))
+            guard count > 0 else { break }
+            let end = filled + count
+            var start = 0, searchFrom = filled
+            while let newline = memchr(base + searchFrom, Int32(UInt8(ascii: "\n")), end - searchFrom) {
+                let lineEnd = base.distance(to: newline)
+                read(UnsafeRawBufferPointer(rebasing: buffer[start..<lineEnd]), into: &state, cutoff: cutoff)
+                start = lineEnd + 1
+                searchFrom = start
+            }
+            state.offset += UInt64(start)
+            // A line still being written has no newline yet; the next refresh reads it.
+            filled = end - start
+            if start > 0 { memmove(base, base + start, filled) }
         }
         return state
     }
 
     /// Streaming writes a line per content block and the last carries the final count, so later lines win.
-    private static func read(_ line: Data, into state: inout FileState) {
-        guard line.range(of: usageKey) != nil, line.range(of: assistantValue) != nil,
-              let entry = try? decoder.decode(Entry.self, from: line), entry.type == "assistant",
-              let at = Date(iso8601: entry.timestamp)
+    private static func read(_ line: UnsafeRawBufferPointer, into state: inout FileState, cutoff: Date) {
+        guard contains(line, usageKey), contains(line, assistantValue) else { return }
+        let data = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: line.baseAddress!), count: line.count, deallocator: .none)
+        guard let entry = try? decoder.decode(Entry.self, from: data), entry.type == "assistant",
+              let at = Date(iso8601: entry.timestamp), at > cutoff
         else { return }
-        if state.origin == nil, let place = try? decoder.decode(Place.self, from: line) {
+        if state.origin == nil, let place = try? decoder.decode(Place.self, from: data) {
             state.origin = .of(entrypoint: place.entrypoint, cwd: place.cwd)
         }
         state.responses["\(entry.message.id ?? "")|\(entry.requestId ?? "")"] = Response(at: at, outputTokens: entry.message.usage.output_tokens ?? 0)
     }
 
+    private static func contains(_ line: UnsafeRawBufferPointer, _ text: StaticString) -> Bool {
+        memmem(line.baseAddress, line.count, text.utf8Start, text.utf8CodeUnitCount) != nil
+    }
+
     private static let decoder = JSONDecoder()
-    private static let newline = UInt8(ascii: "\n")
     /// Checked on the raw bytes first, so only assistant replies pay for a JSON parse.
-    private static let usageKey = Data(#""usage""#.utf8)
-    private static let assistantValue = Data(#""assistant""#.utf8)
+    private static let usageKey: StaticString = #""usage""#
+    private static let assistantValue: StaticString = #""assistant""#
 
     private struct Entry: Decodable {
         struct Message: Decodable {
