@@ -117,7 +117,7 @@ For the past, `TranscriptLog` files each reply's tokens under an `Origin` taken 
 
 ## Activity and identity
 
-`TranscriptLog` is an actor that reads one Claude Code account's transcripts, `projects/**/*.jsonl`, subagents included. On each call it reports the output tokens and requests of the last 5 hours, plus the newest change to any transcript. It reads a transcript changed in the last 5 hours in full once. After that it reads only the bytes added since, so each refresh costs only the new lines. An account counts as active when it wrote something in the last 3 minutes. For Codex and opencode, `Sessions.lastActive` reads the modification time of the newest rollouts or of opencode's database instead.
+`TranscriptLog` is an actor that reads one Claude Code account's transcripts, `projects/**/*.jsonl`, subagents included. On each call it reports the output tokens and requests of the last 5 hours, plus the newest change to any transcript. It reads a transcript changed in the last 5 hours in full once. After that it reads only the bytes added since, so each refresh costs only the new lines. Finding new transcripts means opening every folder under `projects/`, so a full walk runs once a minute, before each history sample, and on a manual refresh; in between, only the transcripts already known are checked. Lines are found and filtered on the raw bytes, and only assistant replies inside the 5 hours are decoded and kept. An account counts as active when it wrote something in the last 3 minutes. For Codex and opencode, `Sessions.lastActive` reads the modification time of the newest rollouts or of opencode's database instead.
 
 `Identity` reads who an account is logged in as without running the tool. For Claude Code it reads `oauthAccount` in `.claude.json`, where `organizationType: "claude_team"` becomes the plan "Team". For Codex it reads the claims in `auth.json`'s ID token.
 
@@ -166,6 +166,6 @@ In the panel, clicking an account asks for confirmation before switching, becaus
 
 ## Known limits
 
-- `TranscriptLog` walks each Claude Code account's whole `projects/` folder every 15 seconds to find changed files. An FSEvents stream would replace the walk. Comparing folders' modification times would not, because appending to an existing transcript doesn't change its folder.
+- `TranscriptLog` walks each Claude Code account's whole `projects/` folder once a minute to find new transcripts. An FSEvents stream would replace the walk. Comparing folders' modification times would not, because appending to an existing transcript doesn't change its folder.
 - Anthropic's usage endpoint and `codex app-server`'s `account/rateLimits/read` aren't documented. A change on their side shows up as a red message under each affected account.
 - Kiro CLI keeps its login in one database that no setting moves, so it can't have separate accounts.
