@@ -79,7 +79,7 @@ public actor TranscriptLog {
         } else {
             for file in files.keys {
                 var info = stat()
-                if stat(file, &info) == 0 { found(Self.modified(info)) { file } }
+                if stat(file, &info) == 0 { found(Date(info.st_mtimespec)) { file } }
             }
         }
         files = recent
@@ -112,8 +112,8 @@ public actor TranscriptLog {
     }
 
     /// Calls `visit` with the modification time of every .jsonl file under `directory`, and a way to
-    /// get its path. The walk runs every refresh over thousands of files, so it reads names straight
-    /// from the directory, stats only transcripts, and makes a path only for a file that asks for it.
+    /// get its path. The walk covers thousands of files, so it reads names straight from the
+    /// directory, stats only transcripts, and makes a path only for a file that asks for it.
     static func transcripts(in directory: String, _ visit: (Date, () -> String) -> Void) {
         guard let dir = opendir(directory) else { return }
         defer { closedir(dir) }
@@ -133,16 +133,12 @@ public actor TranscriptLog {
                     if type == DT_DIR {
                         if !name.elementsEqual(dot), !name.elementsEqual(dotDot) { folders.append(path()) }
                     } else if isTranscript {
-                        visit(modified(info), path)
+                        visit(Date(info.st_mtimespec), path)
                     }
                 }
             }
         }
         for folder in folders { transcripts(in: folder, visit) }
-    }
-
-    private static func modified(_ info: stat) -> Date {
-        Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1e9)
     }
 
     private static let dot = Array(".".utf8), dotDot = Array("..".utf8), jsonl = Array(".jsonl".utf8)

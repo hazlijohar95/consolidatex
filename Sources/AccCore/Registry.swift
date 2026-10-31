@@ -179,6 +179,13 @@ func canonical(_ path: String) -> String {
     URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
 }
 
+extension Date {
+    /// A file time from `stat`.
+    init(_ time: timespec) {
+        self.init(timeIntervalSince1970: TimeInterval(time.tv_sec) + TimeInterval(time.tv_nsec) / 1e9)
+    }
+}
+
 /// `path` with the home folder written as "~", for showing to people.
 public func abbreviatingHome(_ path: String, home: String = userHome()) -> String {
     path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
