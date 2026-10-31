@@ -157,7 +157,7 @@ public actor TranscriptLog {
         defer { buffer.deallocate() }
         // The bytes before `filled` start a line that the last read didn't finish.
         var filled = 0
-        // Up to the size read above; what is appended meanwhile is the next refresh's.
+        // Stops at the size read above, so a file that keeps growing can't hold the read open.
         while state.offset + UInt64(filled) < size {
             if filled == buffer.count {
                 let larger = UnsafeMutableRawBufferPointer.allocate(byteCount: buffer.count * 2, alignment: 1)
