@@ -103,17 +103,16 @@ final class UsageMonitor: ObservableObject {
             let last = sampledAt[entry.0]
             if now.timeIntervalSince(last ?? .distantPast) >= UsageHistory.spacing { due[entry.0] = last ?? now - UsageHistory.spacing }
         }
-        // A sample counts every reply up to now, so an account with a reading to sample looks for new transcripts first.
-        let complete = Set(sampleFrom.keys.filter { readings[$0] != nil })
         Task.detached {
+            let readings = usages.all(registry)
             // One account at a time: the first read after launch goes through every transcript of
             // the last 5 hours, and in parallel the peaks would add up. Later reads are only new lines.
             var activity: [String: TranscriptLog.Activity] = [:]
-            for (id, log) in logs { activity[id] = await log.activity(at: now, complete: force || complete.contains(id)) }
+            // A sample counts every reply up to now, so an account about to be sampled looks for new transcripts first.
+            for (id, log) in logs { activity[id] = await log.activity(at: now, complete: force || sampleFrom[id] != nil && readings[id] != nil) }
             var spent: [String: [Origin: Int]] = [:]
             // Up to `now`: a reply written while this read runs belongs to the next sample.
             for (id, log) in logs { if let since = sampleFrom[id] { spent[id] = await log.tokens(since: since, until: now) } }
-            let readings = usages.all(registry)
             // Claude's comes from its transcripts, which TranscriptLog has just walked.
             let active = registry.accounts.reduce(into: [String: Date]()) { $0[$1.id] = activity[$1.id]?.lastWrite ?? Sessions.lastActive($1) }
             let identities = unread.reduce(into: [String: Identity]()) { $0[$1.id] = Identity.read($1) }
