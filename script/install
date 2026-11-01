@@ -18,6 +18,8 @@ script/bundle $release "$staging" $version
 
 was_running=0
 pkill -x Consolidatex && was_running=1 || true
+# pkill doesn't wait, and `open` would bring the quitting app forward instead of starting the new one.
+for _ in {1..50}; do pgrep -x Consolidatex >/dev/null || break; sleep 0.1; done
 rm -rf "$app"
 mkdir -p "${app:h}" $bin_dir
 mv "$staging" "$app"
