@@ -10,8 +10,12 @@ enum ClaudeUsageAPI {
     private static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
     static func fetch(_ account: Account, home: String = userHome()) async -> Outcome {
-        guard let login = await LiveUsage.offPool({ login(for: account, home: home) }) else { return .failed("Not logged in") }
-        if let expiresAt = login.expiresAt, expiresAt / 1000 < Date().timeIntervalSince1970 {
+        await fetch(with: LiveUsage.offPool { login(for: account, home: home) }, at: Date())
+    }
+
+    static func fetch(with login: Login?, at now: Date) async -> Outcome {
+        guard let login else { return .failed("Not logged in") }
+        if let expiresAt = login.expiresAt, expiresAt / 1000 < now.timeIntervalSince1970 {
             return .failed("Login expired; one message on this account refreshes it")
         }
         var request = URLRequest(url: endpoint, timeoutInterval: 15)

@@ -103,3 +103,73 @@ private let api = Usage(windows: [.init(minutes: 300, usedPercentage: 10, resets
         #expect(history.latest(for: "a") == sample)
     }
 }
+
+/// The `limits` of real replies from Anthropic's usage endpoint, read at `asked`.
+private enum Replies {
+    static let asked = Date(iso8601: "2026-11-01T20:30:00Z")!
+    /// A 5-hour window under way, a weekly limit all models share, and Fable's own weekly limit.
+    static let personal = reply(#"""
+        [{"kind":"session","group":"session","percent":14,"resets_at":"2026-11-01T23:20:00.363023+00:00","scope":null},
+         {"kind":"weekly_all","group":"weekly","percent":84,"resets_at":"2026-11-03T12:00:00.363043+00:00","scope":null},
+         {"kind":"weekly_scoped","group":"weekly","percent":30,"resets_at":"2026-11-03T12:00:00.363247+00:00","scope":{"model":{"id":null,"display_name":"Fable"}}}]
+        """#)
+    /// Out of its 5-hour window.
+    static let cto = reply(#"""
+        [{"kind":"session","group":"session","percent":100,"resets_at":"2026-11-01T21:40:00.468666+00:00","scope":null},
+         {"kind":"weekly_scoped","group":"weekly","percent":100,"resets_at":"2026-11-03T10:00:00.468814+00:00","scope":{"model":{"id":null,"display_name":"Fable"}}}]
+        """#)
+    /// Idle, with Fable's weekly limit used up and no weekly limit shared by all models.
+    static let qeel = reply(#"""
+        [{"kind":"session","group":"session","percent":0,"resets_at":null,"scope":null},
+         {"kind":"weekly_scoped","group":"weekly","percent":100,"resets_at":"2026-11-03T10:00:00.468814+00:00","scope":{"model":{"id":null,"display_name":"Fable"}}}]
+        """#)
+
+    private static func reply(_ limits: String) -> Usage {
+        ClaudeUsageAPI.parse(Data(#"{"limits":\#(limits)}"#.utf8), at: asked)!
+    }
+}
+
+@Suite struct PerModelLimits {
+    let now = Replies.asked
+    let registry = Registry(current: [.claude: "cto"], accounts: [
+        Account(id: "cto", tool: .claude, label: "CTO", configDir: "~/.claude-acc4"),
+        Account(id: "qeel", tool: .claude, label: "Qeel", configDir: "~/.claude-acc6"),
+    ])
+
+    @Test func oneModelsWeeklyLimitLeavesTheAccountWorking() {
+        #expect(!Replies.qeel.isCapped(at: now))
+        #expect(Replies.qeel.load(at: now) == 0)
+        #expect(UsageFormat.summary(Replies.qeel, at: now) == "5h 0% · 7d Fable 100%")
+    }
+
+    @Test func aCappedAccountMovesToOneCappedOnlyOnAModel() {
+        #expect(Replies.cto.isCapped(at: now))
+        let readings = ["cto": Replies.cto, "qeel": Replies.qeel]
+        #expect(registry.roomiest(.claude, readings, excluding: "cto", at: now)?.id == "qeel")
+        #expect(registry.autoPick(.claude, readings, detour: nil, at: now)?.id == "qeel")
+    }
+
+    @Test func theWeeklyLimitAllModelsShareStillCounts() {
+        #expect(Replies.personal.load(at: now) == 84)
+        #expect(UsageFormat.summary(Replies.personal, at: now) == "5h 14% · 7d 84% · 7d Fable 30% · resets in 1d")
+    }
+
+    @Test func historyRecordsOnlyLimitsTheWholeAccountShares() {
+        let qeel = UsageHistory.Sample(Replies.qeel, at: now)
+        #expect(qeel.load == 0)
+        #expect(qeel.week == nil)
+        #expect(UsageHistory.Sample(Replies.personal, at: now).week == 84)
+    }
+}
+
+@Suite struct ExpiredLogins {
+    @Test func anExpiredTokenIsNotALoginFailure() async {
+        let expired = ClaudeUsageAPI.Login(accessToken: "unused", expiresAt: (t0 - 60).timeIntervalSince1970 * 1000)
+        let outcome = await ClaudeUsageAPI.fetch(with: expired, at: t0)
+        if case .failed(let reason) = outcome { Issue.record("an expired token read as a failure: \(reason)") }
+    }
+
+    @Test func noLoginIsStillAFailure() async {
+        #expect(await ClaudeUsageAPI.fetch(with: nil, at: t0) == .failed("Not logged in"))
+    }
+}
