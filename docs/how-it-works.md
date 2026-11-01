@@ -139,7 +139,7 @@ Adding an account lists it before anything else happens: `Registry.addNew` insid
 
 The app starts with launchd's short `PATH`, which misses tools installed through Homebrew, nvm, pnpm or mise. At launch, `LoginShell` runs the login shell once (`$SHELL -ilc`) and puts its `PATH` in front of the app's own. Every tool the app starts then sees what a terminal sees. A tool installed through npm needs this to find `node`. The shell writes the `PATH` to a temporary file rather than a pipe, because a background job started by an rc file can hold a pipe open after the shell exits. Slow shells get 10 seconds.
 
-`Model` holds the registry. Every edit reads `accounts.json` from disk first, applies the change, and saves only if something changed. Skipping unchanged saves matters: a save wakes the folder watcher, the watcher reloads, and the reload runs discovery, which edits again. Without the check that cycle never stops.
+`Model` holds the registry. Every edit goes through `RegistryStore.update`, which reads `accounts.json` from disk first, applies the change, and saves only if something changed. Skipping unchanged saves matters: a save wakes the folder watcher, the watcher reloads, and the reload runs discovery, which edits again. Without the check that cycle never stops. An edit hands back whether it worked, and a failure shows as the error line in the panel and in Manage. That line belongs to what the person did last: their next action replaces it, and closing the panel or Manage dismisses it.
 
 `UsageMonitor` runs every 15 seconds and whenever the panel opens. It does two separate jobs:
 

@@ -41,6 +41,7 @@ struct AccountsView: View {
             Text(model.syncReport ?? "")
         }
         .onAppear { model.checkHealth() }
+        .onDisappear { model.dismissError() }
     }
 
     @ViewBuilder

@@ -22,7 +22,9 @@ final class Model: ObservableObject {
         didSet { if let registry { monitor.registry = registry } }
     }
     @Published private(set) var opensAtLogin = SMAppService.mainApp.status == .enabled
-    @Published var lastError: String?
+    /// What went wrong last. The next thing the person does replaces it, and closing the panel or
+    /// Manage dismisses it.
+    @Published private(set) var lastError: String?
     @Published private(set) var health: [String: AccountHealth] = [:]
     @Published private(set) var checking = false
     @Published private(set) var logins: [String: Login] = [:]
@@ -125,31 +127,32 @@ final class Model: ObservableObject {
 
     // MARK: Editing. Every change goes through the store, so terminals see it at once.
 
-    private func edit(_ change: (inout Registry) throws -> Void) {
+    /// Applies `change` to accounts.json as it is on disk, not to `state`: the watcher misses editors
+    /// that rewrite the file in place. Returns what `change` returns, or nil once `lastError` says why
+    /// it failed.
+    @discardableResult
+    private func edit<T>(_ change: (inout Registry) throws -> T) -> T? {
         do {
-            // From disk, not `state`: the watcher misses editors that rewrite accounts.json in place.
-            let current = try store.loadOrEmpty()
-            var next = current
-            try change(&next)
-            // An unchanged save would wake the file watcher, which reloads and lands back here, and
-            // would clear an error the person hasn't read yet.
-            guard next != current else {
-                setState(.loaded(next))
-                return
+            let (result, next) = try store.update { registry in
+                let result = try change(&registry)
+                return (result, registry)
             }
-            try store.save(next)
             setState(.loaded(next))
-            lastError = nil
+            return result
         } catch {
             lastError = String(describing: error)
+            return nil
         }
     }
 
+    func dismissError() { lastError = nil }
+
     func use(_ account: Account) {
-        edit { try $0.use(account.id) }
+        lastError = nil
+        guard edit({ try $0.use(account.id) }) != nil else { return }
         // A pick by hand ends any automatic move for that tool.
         detours[account.tool] = nil
-        offerTerminal = lastError == nil && !terminalFollows && !UserDefaults.standard.bool(forKey: "terminalOfferDeclined")
+        offerTerminal = !terminalFollows && !UserDefaults.standard.bool(forKey: "terminalOfferDeclined")
     }
 
     func showQuickSwitcher() { quickSwitcher.toggle() }
@@ -186,8 +189,7 @@ final class Model: ObservableObject {
             if let detour = detours[tool], detour.to != current.id { detours[tool] = nil }
             guard let pick = registry.autoPick(tool, usage, detour: detours[tool], at: now) else { continue }
             let returning = detours[tool]?.from == pick.id
-            edit { try $0.use(pick.id) }
-            guard lastError == nil else { continue }
+            guard edit({ try $0.use(pick.id) }) != nil else { continue }
             detours[tool] = Detour.after(moving: current.id, to: pick.id, existing: detours[tool])
             if returning { returned.insert(pick.id) }
             Notices.switched(from: current, to: pick, returning: returning, until: usage[current.id]?.limitingWindow(at: now)?.resetsAt)
@@ -197,6 +199,7 @@ final class Model: ObservableObject {
 
     /// Moves `account`'s latest conversation to the account with the most left, and resumes it in Terminal.
     func continueElsewhere(_ account: Account) {
+        lastError = nil
         guard let registry, let target = registry.roomiest(account.tool, monitor.readings, excluding: account.id) else {
             lastError = "No other \(account.tool.spec.name) account has room right now"
             return
@@ -255,12 +258,17 @@ final class Model: ObservableObject {
     }
     func rename(_ account: Account, to label: String) {
         guard label != account.label else { return }
+        lastError = nil
         edit { try $0.rename(account.id, to: label) }
     }
-    func remove(_ account: Account) { edit { try $0.remove(account.id) } }
+    func remove(_ account: Account) {
+        lastError = nil
+        edit { try $0.remove(account.id) }
+    }
     func move(_ tool: Tool, from source: IndexSet, to destination: Int) {
         guard let registry, let from = source.first else { return }
         let peers = registry.ordered.filter { $0.tool == tool }
+        lastError = nil
         edit { $0.move(peers[from].id, toToolIndex: from < destination ? destination - 1 : destination) }
     }
 
@@ -282,8 +290,8 @@ final class Model: ObservableObject {
         let account = registry.newAccount(tool: tool, label: label, id: id)
         let primary = registry.primary(for: tool)
         let runner = runners[tool]
-        edit { try $0.add(account) }
-        guard lastError == nil else { return }
+        lastError = nil
+        guard edit({ try $0.add(account) }) != nil else { return }
         Task.detached {
             do {
                 try runner?.prepare(account)

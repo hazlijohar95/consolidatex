@@ -52,6 +52,7 @@ struct UsagePanel: View {
             focus = nil
             model.monitor.refresh()
         }
+        .onDisappear { model.dismissError() }
     }
 
     /// Asked the first time someone picks an account, since it's then that the terminal not following matters.
