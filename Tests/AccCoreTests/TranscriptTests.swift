@@ -10,19 +10,22 @@ func append(_ text: String, to path: String) throws {
     try handle.write(contentsOf: Data(text.utf8))
 }
 
-/// A copy of sleep named `name`, which the process table lists under that name. macOS kills a copy
-/// of a system binary soon after it starts, so the copy is signed again as a binary of its own.
+/// A program named `name` that sleeps for its first argument's seconds, so the process table lists it
+/// under that name. It's compiled rather than copied from /bin/sleep: on macOS 26 and later that
+/// binary is arm64e only, and macOS 15 kills an arm64e binary that isn't Apple's as soon as it starts.
 func fakeTool(_ name: String, in home: String) throws -> String {
     let fake = home + "/bin/" + name
     try FileManager.default.createDirectory(atPath: home + "/bin", withIntermediateDirectories: true)
-    try FileManager.default.copyItem(atPath: "/bin/sleep", toPath: fake)
-    let sign = Process()
-    sign.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-    sign.arguments = ["--sign", "-", "--force", fake]
-    sign.standardError = FileHandle.nullDevice
-    try sign.run()
-    sign.waitUntilExit()
-    try #require(sign.terminationStatus == 0)
+    let cc = Process()
+    cc.executableURL = URL(fileURLWithPath: "/usr/bin/cc")
+    cc.arguments = ["-x", "c", "-", "-o", fake]
+    let source = Pipe()
+    cc.standardInput = source
+    try cc.run()
+    try source.fileHandleForWriting.write(contentsOf: Data("#include <stdlib.h>\n#include <unistd.h>\nint main(int c, char **v) { sleep(c > 1 ? atoi(v[1]) : 30); return 0; }\n".utf8))
+    try source.fileHandleForWriting.close()
+    cc.waitUntilExit()
+    try #require(cc.terminationStatus == 0)
     return fake
 }
 
