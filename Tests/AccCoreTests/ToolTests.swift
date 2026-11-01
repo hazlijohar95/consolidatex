@@ -527,7 +527,7 @@ func write(_ text: String, to path: String) {
     }
 
     @Test func codexWindowsWithoutAResetAreLeftOut() {
-        let line = #"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":100,"window_minutes":300},"secondary":{"used_percent":10,"window_minutes":10080,"resets_at":1800500000}}}}"#
+        let line = #"{"timestamp":"2026-10-30T10:00:00.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":100,"window_minutes":300},"secondary":{"used_percent":10,"window_minutes":10080,"resets_at":1800500000}}}}"#
         #expect(CodexSupport.parseTokenCount(line)?.windows.map(\.label) == ["7d"])
     }
 
@@ -685,38 +685,28 @@ func write(_ text: String, to path: String) {
         #expect(RunningSessions.knownApps.first { "com.superlogical.rex.server".hasPrefix($0.idPrefix) }?.name == "Rex")
     }
 
-    /// A real process named claude, on an account folder, found in the real process table.
+    /// A real process named claude, on an account folder, found in the real process table. The tests
+    /// don't start it themselves, because what this process starts is never a session.
     @Test func findsARunningSessionAndItsAccount() throws {
         let home = tempHome()
-        let fake = home + "/bin/claude"
-        try FileManager.default.createDirectory(atPath: home + "/bin", withIntermediateDirectories: true)
-        try FileManager.default.copyItem(atPath: "/bin/sleep", toPath: fake)
-        let session = Process(), bridge = Process(), desktop = Process()
-        let runs: [(Process, [String], [String: String])] = [
-            // An environment larger than the scan's first buffer, which has to grow to read it.
-            (session, ["30"], ["PADDING": String(repeating: "x", count: 60_000), "CLAUDE_CONFIG_DIR": home + "/.claude-w"]),
-            (bridge, ["30", "--chrome-native-host"], ["CLAUDE_CONFIG_DIR": home + "/.claude-w"]),
-            // Started the way Claude desktop starts sessions: a login, no folder.
-            (desktop, ["30"], ["CLAUDE_CODE_ACCOUNT_UUID": "user-1", "CLAUDE_CODE_ORGANIZATION_UUID": "org-team"]),
-        ]
-        for (process, arguments, environment) in runs {
-            process.executableURL = URL(fileURLWithPath: fake)
-            process.arguments = arguments
-            process.environment = environment
-            try process.run()
-        }
-        defer { runs.forEach { $0.0.terminate() } }
+        let fake = try fakeTool("claude", in: home)
+        // An environment larger than the scan's first buffer, which has to grow to read it.
+        let session = try start(fake, ["30"], environment: ["PADDING": String(repeating: "x", count: 60_000), "CLAUDE_CONFIG_DIR": home + "/.claude-w"])
+        let bridge = try start(fake, ["30", "--chrome-native-host"], environment: ["CLAUDE_CONFIG_DIR": home + "/.claude-w"])
+        // Started the way Claude desktop starts sessions: a login, no folder.
+        let desktop = try start(fake, ["30"], environment: ["CLAUDE_CODE_ACCOUNT_UUID": "user-1", "CLAUDE_CODE_ORGANIZATION_UUID": "org-team"])
+        defer { [session, bridge, desktop].forEach { kill($0, SIGTERM) } }
         let registry = Registry(current: [.claude: "w"], accounts: [
             Account(id: "w", tool: .claude, label: "W", configDir: "~/.claude-w"),
             Account(id: "team", tool: .claude, label: "Team", configDir: "~/.claude-team"),
         ])
         // One person in two organizations: only the organization tells the accounts apart.
         let logins = ["w": Identity.Login(account: "user-1", organization: "org-personal"), "team": Identity.Login(account: "user-1", organization: "org-team")]
-        let ours = Set(runs.map { $0.0.processIdentifier })
+        let ours: Set = [session, bridge, desktop]
         let found = RunningSessions.scan(registry, logins: { logins }, home: home)
             .filter { ours.contains($0.pid) }
-        #expect(found.map(\.pid) == [session.processIdentifier, desktop.processIdentifier].sorted())
-        #expect(Dictionary(uniqueKeysWithValues: found.map { ($0.pid, $0.accountID) }) == [session.processIdentifier: "w", desktop.processIdentifier: "team"])
+        #expect(found.map(\.pid) == [session, desktop].sorted())
+        #expect(Dictionary(uniqueKeysWithValues: found.map { ($0.pid, $0.accountID) }) == [session: "w", desktop: "team"])
     }
 }
 

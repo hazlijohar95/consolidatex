@@ -48,6 +48,7 @@ public enum RunningSessions {
         }
         var arguments = ArgumentBuffer()
         var accountByLogin: [Identity.Login: String]?
+        let ourselves = getpid()
         return processes.compactMap { pid, process in
             let spec = process.tool.spec
             // A wrapper that execs the real binary under the same name is one session with it. A
@@ -67,7 +68,10 @@ public enum RunningSessions {
                 accountID = folders[process.tool]?[folder] ?? nil
             }
             guard let accountID else { return nil }
-            return RunningSession(pid: pid, accountID: accountID, launcher: launcher(above: pid))
+            let parents = ancestors(of: pid)
+            // What this process started, such as the app's own `codex app-server`, is nobody's session.
+            guard !parents.contains(ourselves) else { return nil }
+            return RunningSession(pid: pid, accountID: accountID, launcher: launcher(among: parents))
         }
         .sorted { $0.pid < $1.pid }
     }
@@ -121,15 +125,21 @@ public enum RunningSessions {
         !name.isEmpty && name.allSatisfy { $0 == UInt8(ascii: ".") || (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) }
     }
 
-    /// The highest app bundle among `pid`'s parents.
-    static func launcher(above pid: pid_t) -> Launcher {
-        var highest: String?
+    /// `pid`'s parents, nearest first, up to but not including launchd.
+    static func ancestors(of pid: pid_t) -> [pid_t] {
+        var parents: [pid_t] = []
         var current = pid
         for _ in 0..<16 {
             guard let parent = shortInfo(current).map({ pid_t($0.pbsi_ppid) }), parent > 1 else { break }
-            if let path = executablePath(parent), let bundle = AppInstall.appBundle(around: path) { highest = bundle }
+            parents.append(parent)
             current = parent
         }
+        return parents
+    }
+
+    /// The highest app bundle among a process's parents.
+    static func launcher(among parents: [pid_t]) -> Launcher {
+        let highest = parents.compactMap { executablePath($0).flatMap(AppInstall.appBundle(around:)) }.last
         return highest.map { Launcher(name: appNames.name(of: $0), bundle: $0) } ?? .background
     }
 

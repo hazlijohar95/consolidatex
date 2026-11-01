@@ -111,7 +111,7 @@ Two sources answer this, one for now and one for the past.
 - The folder variable gives the account, through `Registry.account(for:configDir:)`.
 - Claude desktop passes a login instead of a folder. Its sessions name that login in `CLAUDE_CODE_ACCOUNT_UUID` and `CLAUDE_CODE_ORGANIZATION_UUID`, and take the account whose `.claude.json` has the same `oauthAccount.accountUuid` and `organizationUuid`. Both IDs are needed. One person in two organizations has one user ID, so the user ID alone can't tell a team account from a personal one.
 - The app is the highest `.app` bundle among the process's parents, the one closest to launchd. That is the app a person works in. A helper inside it reads as the app, and so does a session started from inside another, such as a `claude` that a Claude desktop session runs from its shell tool. `RunningSessions.knownApps` names Rex, T3 Code and Claude desktop by bundle id.
-- `claude --chrome-native-host`, Claude Code's entry in `ignoredArguments`, is the Claude in Chrome bridge, not a session, so it is left out. A process whose direct parent has the same tool name is a wrapper's inner half, so it is left out too.
+- `claude --chrome-native-host`, Claude Code's entry in `ignoredArguments`, is the Claude in Chrome bridge, not a session, so it is left out. A process whose direct parent has the same tool name is a wrapper's inner half, so it is left out too. So is anything the scanning process started itself, such as the app's own `codex app-server`, even through a launcher like npm's `codex` script.
 
 For the past, `TranscriptLog` files each reply's tokens under an `Origin` taken from the transcript's `entrypoint` and `cwd`: `claude-desktop`, `cli` (a terminal), and Agent SDK sessions in `~/.t3` (T3 Code). A transcript can't tell one terminal from another, so past terminal work shows as "Terminal". Each history sample keeps the tokens spent since the previous sample, by origin (`TranscriptLog.tokens(since:)`), so summing a week of samples gives exact shares without reading 7 days of transcripts again. The menu bar app publishes per-app counts (`AppCount`), not processes. The Agent SDK starts a new process per query, and counts that stay the same don't redraw the panel.
 
@@ -154,6 +154,8 @@ In the panel, clicking an account asks for confirmation before switching, becaus
 ## Moving a conversation
 
 `acc continue` finds the newest Claude Code or Codex conversation started in the current folder, in any account. It copies the conversation to the target account, then resumes it there. A Claude Code conversation is a transcript in `projects/<folder slug>/` plus a folder of subagent transcripts beside it. A Codex conversation is one rollout file under `sessions/YYYY/MM/DD/`. opencode keeps conversations in a database, so they can't move.
+
+What the copy holds is the first account's work, and the readers of usage take every line in an account's folder as that account's. So `copyReplacing` stores each copied file's length in an extended attribute, `io.cynco.consolidatex.copied-bytes`, and `TranscriptLog` and the Codex `token_count` reader start after it (`CopiedBytes`). Without it, a capped Codex account's last reading would cap the target, and a Claude Code account would count the first account's replies of the last 5 hours as its own. Finding and resuming the conversation still read the whole file. A copy that is copied on gets a new mark at its new length, so it never keeps the one it came with.
 
 ## Tests
 

@@ -61,13 +61,15 @@ public enum CodexSupport {
         return nil
     }
 
-    /// The newest token_count event in the last `bytes` of a rollout. The app reads this every 15
-    /// seconds, so lines are found on the raw bytes and only those naming token_count become text.
+    /// The newest token_count event in the last `bytes` of a rollout, after what another account's
+    /// conversation held when it was copied in. The app reads this every 15 seconds, so lines are
+    /// found on the raw bytes and only those naming token_count become text.
     static func lastTokenCount(in file: URL, bytes: Int) -> Usage? {
         guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
-        let start = size > UInt64(bytes) ? size - UInt64(bytes) : 0
+        let copied = CopiedBytes.count(in: handle.fileDescriptor)
+        let start = max(size > UInt64(bytes) ? size - UInt64(bytes) : 0, copied)
         guard (try? handle.seek(toOffset: start)) != nil, let tail = try? handle.readToEnd() else { return nil }
         return tail.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) -> Usage? in
             let key: StaticString = #""token_count""#
@@ -77,8 +79,9 @@ public enum CodexSupport {
                 let at = buffer.baseAddress!.distance(to: hit)
                 let lineStart = buffer[..<at].lastIndex(of: 0x0A).map { $0 + 1 } ?? 0
                 let lineEnd = buffer[at...].firstIndex(of: 0x0A) ?? buffer.count
-                // The first line of a tail that starts mid-file is cut off.
-                if lineStart > 0 || start == 0 { lines.append(lineStart..<lineEnd) }
+                // The first line of a tail that starts mid-file is cut off; one that starts where a
+                // copy ended begins with this account's first line.
+                if lineStart > 0 || start == copied { lines.append(lineStart..<lineEnd) }
                 from = lineEnd
             }
             return lines.reversed().lazy.compactMap { parseTokenCount(String(decoding: buffer[$0], as: UTF8.self)) }.first
@@ -86,17 +89,18 @@ public enum CodexSupport {
     }
 
     /// A token_count event line → Usage. Only the main "codex" limit counts toward the subscription.
+    /// An event without a time is left out: it would read as new every time and never age.
     public static func parseTokenCount(_ line: String) -> Usage? {
         struct Window: Decodable { let used_percent: Double; let window_minutes: Int?; let resets_at: Double? }
         struct Limits: Decodable { let limit_id: String?; let plan_type: String?; let primary: Window?; let secondary: Window? }
         struct Payload: Decodable { let type: String; let rate_limits: Limits? }
         struct Event: Decodable { let timestamp: String?; let payload: Payload }
         guard let event = try? JSONDecoder().decode(Event.self, from: Data(line.utf8)),
-              event.payload.type == "token_count", let limits = event.payload.rate_limits
+              event.payload.type == "token_count", let limits = event.payload.rate_limits,
+              let at = event.timestamp.flatMap(Date.init(iso8601:))
         else { return nil }
         let window = { (w: Window?) in w.map { RateWindow(usedPercent: $0.used_percent, minutes: $0.window_minutes, resetsAt: $0.resets_at) } }
-        return usage(limitID: limits.limit_id, plan: limits.plan_type, primary: window(limits.primary), secondary: window(limits.secondary),
-                     at: event.timestamp.flatMap { try? Date.iso8601.parse($0) } ?? Date())
+        return usage(limitID: limits.limit_id, plan: limits.plan_type, primary: window(limits.primary), secondary: window(limits.secondary), at: at)
     }
 
     /// One rate-limit window as Codex reports it, in a session file or from its app server.

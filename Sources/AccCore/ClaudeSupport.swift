@@ -201,14 +201,3 @@ public enum StatusLine {
         return line
     }
 }
-
-/// Copies items into `directory`, replacing anything already there; missing sources are skipped.
-func copyReplacing(_ items: [URL], into directory: URL) throws {
-    let fm = FileManager.default
-    try fm.createDirectory(at: directory, withIntermediateDirectories: true)
-    for item in items where fm.fileExists(atPath: item.path) {
-        let destination = directory.appendingPathComponent(item.lastPathComponent)
-        if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
-        try fm.copyItem(at: item, to: destination)
-    }
-}
