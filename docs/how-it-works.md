@@ -120,7 +120,7 @@ For the past, `TranscriptLog` files each reply's tokens under an `Origin` taken 
 
 `TranscriptLog` is an actor that reads one Claude Code account's transcripts, `projects/**/*.jsonl`, subagents included. On each call it reports the output tokens and requests of the last 5 hours, plus the newest change to any transcript. It reads a transcript changed in the last 5 hours in full once. After that it reads only the bytes added since, so each refresh costs only the new lines. Finding new transcripts means opening every folder under `projects/`, so a full walk runs once a minute, before each history sample, and on a manual refresh; in between, only the transcripts already known are checked. Lines are found and filtered on the raw bytes, and only assistant replies are decoded, and only those inside the 5 hours are kept. An account counts as active when it wrote something in the last 3 minutes. For Codex and opencode, `Sessions.lastActive` reads the modification time of the newest rollouts or of opencode's database instead.
 
-`Identity` reads who an account is logged in as without running the tool. For Claude Code it reads `oauthAccount` in `.claude.json`, where `organizationType: "claude_team"` becomes the plan "Team". For Codex it reads the claims in `auth.json`'s ID token.
+`Identity` reads who an account is logged in as without running the tool. For Claude Code it reads `oauthAccount` in `.claude.json`, where `organizationType: "claude_team"` becomes the plan "Team". For Codex it reads the claims in `auth.json`'s ID token. Claude Code's state file can run to megabytes, so the app reads an account's identity once, then again only after the account logs in, its email changes or someone presses refresh.
 
 ## Discovery
 
