@@ -47,6 +47,7 @@ final class UsageMonitor: ObservableObject {
     private var schedule: LiveUsage.Schedule
     /// Capped as of the previous refresh, to notice when one comes back.
     private var capped: Set<String>?
+    /// When each account was last sampled, `distantPast` for never. Read from its history after a relaunch.
     private var sampledAt: [String: Date] = [:]
     private var prunedAt: [String: Date] = [:]
     private var logs: [String: TranscriptLog] = [:]
@@ -98,10 +99,14 @@ final class UsageMonitor: ObservableObject {
         let logs = registry.accounts(for: .claude).map { ($0.id, self.logs[$0.id] ?? TranscriptLog(folder: $0.folder())) }
         let known = identities
         self.logs = Dictionary(uniqueKeysWithValues: logs)
-        // History takes the tokens spent since each account's previous sample.
+        for account in registry.accounts where sampledAt[account.id] == nil {
+            sampledAt[account.id] = history.latest(for: account.id)?.at ?? .distantPast
+        }
+        // History takes the tokens spent since each account's previous sample, as far back as the
+        // transcript log reaches.
         let sampleFrom = logs.reduce(into: [String: Date]()) { due, entry in
-            let last = sampledAt[entry.0]
-            if now.timeIntervalSince(last ?? .distantPast) >= UsageHistory.spacing { due[entry.0] = last ?? now - UsageHistory.spacing }
+            let last = sampledAt[entry.0] ?? .distantPast
+            if now.timeIntervalSince(last) >= UsageHistory.spacing { due[entry.0] = last }
         }
         Task.detached {
             let readings = usages.all(registry)

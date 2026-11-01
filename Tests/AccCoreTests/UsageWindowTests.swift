@@ -81,3 +81,25 @@ private let api = Usage(windows: [.init(minutes: 300, usedPercentage: 10, resets
         #expect(schedule.toAsk(["a"], readings: [:], at: t0 + 900, force: true) == ["a"])
     }
 }
+
+@Suite struct HistoryAcrossRelaunch {
+    @Test func latestIsTheLastSampleWritten() throws {
+        let history = UsageHistory(usageStore: UsageStore(registryStore: tempStore()))
+        #expect(history.latest(for: "a") == nil)
+        // Long enough that the file is more than the end that gets read.
+        let samples = (0..<300).map { UsageHistory.Sample(at: t0 + Double($0) * 900, load: 20, week: 30, apps: .init([.terminal: $0])) }
+        for s in samples { try history.append(s, for: "a") }
+        #expect(history.latest(for: "a") == samples.last)
+    }
+
+    @Test func aHalfWrittenLastLineIsSkipped() throws {
+        let history = UsageHistory(usageStore: UsageStore(registryStore: tempStore()))
+        let sample = UsageHistory.Sample(at: t0, load: 20, week: 30)
+        try history.append(sample, for: "a")
+        let file = try FileHandle(forWritingTo: history.directory.appendingPathComponent("a.jsonl"))
+        try file.seekToEnd()
+        try file.write(contentsOf: Data(#"{"at":18000009"#.utf8))
+        try file.close()
+        #expect(history.latest(for: "a") == sample)
+    }
+}

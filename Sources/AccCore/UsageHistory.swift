@@ -80,6 +80,17 @@ public struct UsageHistory: Sendable {
         return text.split(separator: "\n").compactMap { try? Self.decoder.decode(Sample.self, from: Data($0.utf8)) }.filter { $0.at >= since }
     }
 
+    /// The newest sample: the file's last line. Only the end of the file is read, since a history runs
+    /// to thousands of lines.
+    public func latest(for id: String) -> Sample? {
+        guard let handle = try? FileHandle(forReadingFrom: file(id)) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd(), (try? handle.seek(toOffset: size - min(size, 4096))) != nil,
+              let tail = try? handle.readToEnd() else { return nil }
+        // The first line read is likely cut off, and a crash can leave the last one half written.
+        return tail.split(separator: 0x0A).reversed().lazy.compactMap { try? Self.decoder.decode(Sample.self, from: $0) }.first
+    }
+
     /// Drops samples older than `keep`. Rewrites the file, so it runs now and then, not on every append.
     public func prune(_ id: String, at now: Date) throws {
         let kept = try samples(for: id, since: now - Self.keep).map { try Self.encoder.encode($0) + Data([0x0A]) }
