@@ -453,7 +453,8 @@ func main() throws {
         args.removeFirst()
         let label = args.isEmpty ? nil : args.joined(separator: " ")
         let runner = try Runner.locate(t)
-        let (account, registry) = try store.update { r in (try r.addNew(t, label: label, id: id, configDir: dir), r) }
+        let configDir = dir.map { Account.configDir(typed: $0) }
+        let (account, registry) = try store.update { r in (try r.addNew(t, label: label, id: id, configDir: configDir), r) }
         do {
             for change in try Shared.setUp(account, in: registry, runner: runner) { say("  \(change)") }
         } catch {

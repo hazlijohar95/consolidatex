@@ -31,6 +31,25 @@ import Testing
     }
 }
 
+@Suite struct Folders {
+    @Test func typedFoldersAreKeptAbsoluteAndUnderHomeAsTilde() {
+        #expect(Account.configDir(typed: ".codex-rel", cwd: "/w/p1", home: "/h") == "/w/p1/.codex-rel")
+        #expect(Account.configDir(typed: "/h/.codex-side/", cwd: "/w", home: "/h") == "~/.codex-side")
+        #expect(Account.configDir(typed: "~/.codex-side", cwd: "/w", home: "/h") == "~/.codex-side")
+        #expect(Account.configDir(typed: "../h/./x//", cwd: "/w", home: "/h") == "~/x")
+        #expect(Account.configDir(typed: "/h2/x", cwd: "/w", home: "/h") == "/h2/x")
+    }
+
+    @Test func oneFolderWrittenTwoWaysIsADuplicate() {
+        var r = sample
+        #expect(throws: AccError.invalidRegistry(["more than one Codex account uses /abs/side"])) {
+            try r.add(Account(id: "dup", tool: .codex, label: "Dup", configDir: "/abs/side/"))
+        }
+        r.accounts.append(Account(id: "abs", tool: .claude, label: "Abs", configDir: "/h/.claude-acc4"))
+        #expect(throws: AccError.invalidRegistry(["more than one Claude Code account uses ~/.claude-acc4"])) { try r.validate(home: "/h") }
+    }
+}
+
 @Suite struct Adding {
     @Test func addNewNamesAndPlacesTheAccount() throws {
         var r = sample
