@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import AccCore
@@ -7,6 +8,48 @@ func append(_ text: String, to path: String) throws {
     defer { try? handle.close() }
     try handle.seekToEnd()
     try handle.write(contentsOf: Data(text.utf8))
+}
+
+/// A copy of sleep named `name`, which the process table lists under that name. macOS kills a copy
+/// of a system binary soon after it starts, so the copy is signed again as a binary of its own.
+func fakeTool(_ name: String, in home: String) throws -> String {
+    let fake = home + "/bin/" + name
+    try FileManager.default.createDirectory(atPath: home + "/bin", withIntermediateDirectories: true)
+    try FileManager.default.copyItem(atPath: "/bin/sleep", toPath: fake)
+    let sign = Process()
+    sign.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+    sign.arguments = ["--sign", "-", "--force", fake]
+    sign.standardError = FileHandle.nullDevice
+    try sign.run()
+    sign.waitUntilExit()
+    try #require(sign.terminationStatus == 0)
+    return fake
+}
+
+/// Starts `executable` from a shell and returns its pid once it runs under its own name. Detached,
+/// the shell exits at once and launchd adopts the process; otherwise the shell stays its parent.
+func start(_ executable: String, _ arguments: [String], environment: [String: String], detached: Bool = true) throws -> pid_t {
+    let shell = Process()
+    shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+    shell.arguments = ["-c", #""$0" "$@" >/dev/null 2>&1 & echo $!; exec >&-"# + (detached ? "" : "; wait"), executable] + arguments
+    shell.environment = environment
+    let output = Pipe()
+    shell.standardOutput = output
+    try shell.run()
+    let printed = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    let pid = try #require(pid_t(printed.trimmingCharacters(in: .whitespacesAndNewlines)))
+    if detached { shell.waitUntilExit() }
+    // The shell forks first, so the new process runs as the shell until it execs.
+    let name = Array(URL(fileURLWithPath: executable).lastPathComponent.utf8)
+    let deadline = Date() + 5
+    while kill(pid, 0) == 0, processName(pid) != name, Date() < deadline { usleep(5_000) }
+    return pid
+}
+
+private func processName(_ pid: pid_t) -> [UInt8] {
+    var buffer = [UInt8](repeating: 0, count: 64)
+    let length = proc_name(pid, &buffer, UInt32(buffer.count))
+    return Array(buffer.prefix(Int(max(length, 0))))
 }
 
 /// `acc continue` copies a conversation into another account's folder. What came with the copy is
@@ -108,6 +151,31 @@ func append(_ text: String, to path: String) throws {
         let usage = CodexSupport.lastTokenCount(in: URL(fileURLWithPath: file), bytes: 1 << 20)
         #expect(usage?.recordedAt == Date(timeIntervalSince1970: 1_793_354_400))
         #expect(usage?.windows.first?.usedPercentage == 40)
+    }
+}
+
+@Suite struct OwnProcesses {
+    /// The app's own `codex app-server`, started to read usage, is nobody's session.
+    @Test func aToolThisProcessStartedIsNoSession() throws {
+        let home = tempHome(), fake = try fakeTool("codex", in: home)
+        let registry = Registry(current: [.codex: "probe"], accounts: ["probe", "wrapped", "session"].map {
+            Account(id: $0, tool: .codex, label: $0, configDir: home + "/.codex-" + $0)
+        })
+        let environment = { (id: String) in ["CODEX_HOME": home + "/.codex-" + id] }
+        // Started directly, as `liveUsage` starts it.
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: fake)
+        probe.arguments = ["30"]
+        probe.environment = environment("probe")
+        try probe.run()
+        // Started through a launcher that stays its parent, as npm's codex does on a Node without execve.
+        let wrapped = try start(fake, ["30"], environment: environment("wrapped"), detached: false)
+        let session = try start(fake, ["30"], environment: environment("session"))
+        defer { probe.terminate(); kill(wrapped, SIGTERM); kill(session, SIGTERM) }
+
+        let ours: Set = [probe.processIdentifier, wrapped, session]
+        let found = RunningSessions.scan(registry, logins: { [:] }, home: home).filter { ours.contains($0.pid) }
+        #expect(found.map(\.accountID) == ["session"])
     }
 }
 
