@@ -17,11 +17,14 @@ struct AccountsView: View {
                     ForEach(registry.tools, id: \.self) { tool in
                         Section(tool.spec.name) {
                             ForEach(registry.accounts(for: tool)) { account in
+                                let isPrimary = registry.primary(for: tool)?.id == account.id
                                 AccountRow(model: model, account: account,
                                            position: registry.ordered.firstIndex(of: account)! + 1,
                                            isCurrent: registry.isCurrent(account),
-                                           isPrimary: registry.primary(for: tool)?.id == account.id)
+                                           isPrimary: isPrimary)
                                     .tag(account.id)
+                                    // A primary for being listed first stays first (Registry.move), so dragging it would do nothing.
+                                    .moveDisabled(isPrimary && account.configDir != nil)
                             }
                             .onMove { model.move(tool, from: $0, to: $1) }
                         }
