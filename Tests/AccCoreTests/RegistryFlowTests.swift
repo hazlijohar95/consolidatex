@@ -50,6 +50,33 @@ import Testing
     }
 }
 
+@Suite struct Primary {
+    let firstListed = Registry(current: [.codex: "a"], accounts: [
+        Account(id: "a", tool: .codex, label: "A", configDir: "~/.codex-a"),
+        Account(id: "b", tool: .codex, label: "B", configDir: "~/.codex-b"),
+        Account(id: "c", tool: .codex, label: "C", configDir: "~/.codex-c"),
+    ])
+
+    @Test func reorderingNeverChangesThePrimary() {
+        for id in ["a", "b", "c"] {
+            for index in -1...4 {
+                var r = firstListed
+                r.move(id, toToolIndex: index)
+                #expect(r.primary(for: .codex)?.id == "a", "moving \(id) to \(index)")
+            }
+        }
+        var r = firstListed
+        r.move("c", toToolIndex: 0)
+        #expect(r.accounts.map(\.id) == ["a", "c", "b"])
+    }
+
+    @Test func aPrimaryOnTheDefaultFolderLeavesTheOrderFree() {
+        var r = sample
+        r.move("cto", toToolIndex: 0)
+        #expect(r.ordered.first?.id == "cto" && r.primary(for: .claude)?.id == "team")
+    }
+}
+
 @Suite struct Adding {
     @Test func addNewNamesAndPlacesTheAccount() throws {
         var r = sample

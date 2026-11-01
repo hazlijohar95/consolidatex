@@ -63,7 +63,7 @@ Picking an account only writes `current`. Nothing reaches running sessions, beca
 
 ## Shared config
 
-Every account of a tool shares config with that tool's main account. The main account is the one on the default folder, or else the first one listed (`Registry.primary`). `Shared.link` symlinks each of the tool's `sharedItems` from the main account's folder into the other accounts' folders. For Claude Code these are `CLAUDE.md`, `settings.json`, `skills`, `agents`, `commands`, `plugins` and `hooks`. `Shared.link` never replaces a real file. It reports one instead, and `acc doctor` shows it.
+Every account of a tool shares config with that tool's main account. The main account is the one on the default folder, or else the first one listed (`Registry.primary`). Reordering can't change it, because `Registry.move` keeps a first-listed main account first. `Shared.link` symlinks each of the tool's `sharedItems` from the main account's folder into the other accounts' folders. For Claude Code these are `CLAUDE.md`, `settings.json`, `skills`, `agents`, `commands`, `plugins` and `hooks`. `Shared.link` never replaces a real file. It reports one instead, and `acc doctor` shows it.
 
 Claude Code keeps user-scope MCP servers in each account's own `.claude.json`, so they can't be shared with a symlink. `Shared.sync` copies them instead, through `claude mcp add-json` and `claude mcp remove`, so Claude Code's own file locking applies.
 

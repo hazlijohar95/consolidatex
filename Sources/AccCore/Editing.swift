@@ -53,8 +53,13 @@ extension Registry {
     }
 
     /// Moves an account to `index` among the accounts of its own tool (positions drive the 1-9 shortcuts).
+    /// With no account on the default folder, the first one is the primary whose config the others
+    /// share, so it stays first: reordering never changes which config they follow.
     public mutating func move(_ id: String, toToolIndex index: Int) {
         guard let from = accounts.firstIndex(where: { $0.id == id }) else { return }
+        let pinned = primary(for: accounts[from].tool).flatMap { $0.configDir == nil ? nil : $0.id }
+        guard pinned != id else { return }
+        let index = pinned == nil ? index : max(index, 1)
         let account = accounts.remove(at: from)
         let peers = accounts.indices.filter { accounts[$0].tool == account.tool }
         let target = index < peers.count ? peers[max(index, 0)] : (peers.last.map { $0 + 1 } ?? accounts.count)
