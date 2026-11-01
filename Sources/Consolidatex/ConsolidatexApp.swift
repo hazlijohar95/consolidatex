@@ -304,14 +304,28 @@ final class Model: ObservableObject {
             let results = await LiveUsage.offPool { AccountHealth.checkAll(registry, runners: runners) }
             self.health = results
             self.checking = false
+            self.finishLogins(results)
             self.recordEmails(results)
+        }
+    }
+
+    /// A login finished in Terminal, or by hand after the app gave up on it: the tool now says the
+    /// account is logged in, so its row stops asking and its login is read again.
+    private func finishLogins(_ results: [String: AccountHealth]) {
+        for id in logins.keys where results[id]?.loggedIn == true {
+            logins[id] = nil
+            monitor.rereadIdentity(of: id)
         }
     }
 
     private func recordEmails(_ results: [String: AccountHealth]) {
         guard let registry else { return }
         let changed = registry.accounts.filter { a in results[a.id]?.email.map { $0 != a.email } ?? false }
-        if !changed.isEmpty { edit { r in for a in changed { r.recordEmail(results[a.id]?.email, for: a.id) } } }
+        guard !changed.isEmpty else { return }
+        // Someone else is logged in there now, so the plan and email read before are out of date.
+        // Marked first, so the refresh the edit starts reads them.
+        for a in changed { monitor.rereadIdentity(of: a.id) }
+        edit { r in for a in changed { r.recordEmail(results[a.id]?.email, for: a.id) } }
     }
 
     func syncConfig() {
@@ -352,7 +366,9 @@ final class Model: ObservableObject {
         logins[account.id] = .waiting
         Task {
             switch await LiveUsage.offPool({ Self.runLogin(account, runner: runner) }) {
-            case .success: self.logins[account.id] = nil
+            case .success:
+                self.logins[account.id] = nil
+                self.monitor.rereadIdentity(of: account.id)
             case .failure(let message): self.logins[account.id] = .failed(message)
             }
             self.checkHealth()

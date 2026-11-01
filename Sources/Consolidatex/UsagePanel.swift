@@ -51,6 +51,8 @@ struct UsagePanel: View {
         .onAppear {
             focus = nil
             model.monitor.refresh()
+            // A Terminal login finishes outside the app, so opening the panel is when to look.
+            if model.logins.values.contains(.inTerminal) { model.checkHealth() }
         }
         .onDisappear { model.dismissError() }
     }
