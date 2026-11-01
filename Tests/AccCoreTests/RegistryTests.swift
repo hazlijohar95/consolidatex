@@ -204,7 +204,7 @@ func tempHome() -> String {
         let home = tempHome()
         write(#"{"oauthAccount":{"emailAddress":"w@cynco.io"}}"#, to: home + "/.claude-work/.claude.json")
         var r = Registry.empty
-        let a = try r.adopt(Discovery.Candidate(tool: .claude, label: "work", configDir: "~/.claude-work", source: "~/.claude-work"), home: home)
+        let a = try r.adopt(Discovery.Candidate(tool: .claude, label: "work", configDir: "~/.claude-work"), home: home)
         #expect(a.id == "work" && a.email == "w@cynco.io" && r.current[.claude] == "work")
     }
 }

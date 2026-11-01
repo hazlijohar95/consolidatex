@@ -33,10 +33,17 @@ PY
 fi
 echo "CFG=${CLAUDE_CONFIG_DIR-<unset>} ARGS=$*"
 EOF
-# codex: `login status` exits 0 unless the home has LOGGED_OUT.
+# codex: `login status` exits 0 unless the home has LOGGED_OUT; `login` runs $ON_LOGIN (another
+# acc acting meanwhile, like the app), then fails with $FAIL_LOGIN or logs the home in.
 cat > $T/bin/codex <<'EOF'
 #!/bin/sh
-if [ "$1 $2" = "login status" ]; then [ -e "${CODEX_HOME:-$HOME/.codex}/LOGGED_OUT" ] && exit 1; exit 0; fi
+home="${CODEX_HOME:-$HOME/.codex}"
+if [ "$1 $2" = "login status" ]; then [ -e "$home/LOGGED_OUT" ] && exit 1; exit 0; fi
+if [ "$1" = login ]; then
+  [ -n "$ON_LOGIN" ] && sh -c "$ON_LOGIN"
+  [ -n "$FAIL_LOGIN" ] && exit 1
+  rm -f "$home/LOGGED_OUT"; exit 0
+fi
 echo "CODEX=${CODEX_HOME-<unset>} ARGS=$*"
 EOF
 # opencode: `auth list --format json` reports one connected provider.
@@ -58,7 +65,7 @@ print '{}' > $H/.codex-side/auth.json
 print '{"providerInstances":{"a":{"driver":"claudeAgent","displayName":"Haz (team)","enabled":true}}}' > $H/.t3/userdata/settings.json
 
 export ACC_HOME=$T/acc HOME=$H SHELL=/bin/zsh PATH=$T/bin:/usr/bin:/bin
-unset CLAUDE_CONFIG_DIR CODEX_HOME XDG_DATA_HOME ACC_CLAUDE ACC_CODEX ACC_OPENCODE
+unset CLAUDE_CONFIG_DIR CODEX_HOME XDG_DATA_HOME
 
 fail=0
 check() {
@@ -68,6 +75,11 @@ plain() { sed $'s/\e\\[[0-9;]*m//g' }
 current() { acc ls $1 | grep '^●' | awk '{print $4}' }
 col() { sed 's/^●/ /' | awk "{print $1}" }
 sh() { zsh -fc 'eval "$(acc shell-init zsh)"; '"$1" 2>&1 }
+# The same in zsh then bash, under a `claude` alias defined before the hook, as rc files often have.
+aliased() {
+  zsh -fc 'alias claude="claude --x"; eval "$(acc shell-init zsh)"; eval "$1"' zsh "$1" 2>&1
+  bash --norc --noprofile -c 'shopt -s expand_aliases; alias claude="claude --x"; eval "$(acc shell-init bash)"; eval "$1"' bash "$1" 2>&1
+}
 
 # --- first run
 check 'nothing yet'                       "$(acc ls 2>&1)" 'acc: no accounts yet (run: acc setup)'
@@ -91,6 +103,8 @@ check 'codex keeps its own current'       "$(sh 'codex exec hi')" 'CODEX=<unset>
 acc codex side >/dev/null
 check 'switch within a tool'              "$(sh 'codex')" "CODEX=$H/.codex-side ARGS="
 check 'switching codex left claude alone' "$(current claude)" cto
+check 'an alias does not break the hook'  "$(aliased $'codex\nclaude q')" "$(repeat 2 print -r -- "CODEX=$H/.codex-side ARGS=
+CFG=$H/.claude-cto ARGS=--x q")"
 acc 3 >/dev/null
 check 'switch by position'                "$(current codex)" codex-default
 check '@ one-off'                         "$(sh 'codex @side x')" "CODEX=$H/.codex-side ARGS=x"
@@ -114,6 +128,19 @@ acc add codex 'Client A' >/dev/null
 check 'add links shared codex config'     "$(readlink $H/.codex-client-a/config.toml)" "$H/.codex/config.toml"
 check 'add refuses a duplicate'           "$(acc add codex x --id side 2>&1)" "acc: an account with id 'side' already exists"
 check 'add refuses an unknown tool'       "$(acc add kiro 2>&1 | head -1)" 'acc: usage: acc add <claude|codex|opencode> [<name>] [--id <id>] [--dir <folder>]'
+# Every word main.swift dispatches on must be a reserved id, or an account named that could never be picked.
+dispatched=($(grep -oE '^    case "[^:]+":' $root/Sources/acc/main.swift | grep -oE '"[a-z][a-z-]*"' | tr -d '"'))
+unreserved=($(for c in $dispatched; do acc add codex x --id $c 2>&1 | grep -q 'is not a valid id' || print $c; done))
+check 'every command is a reserved id'    "$(( ${#dispatched} > 15 )) [$unreserved]" '1 []'
+
+# --- adding with a login: listed first, so nothing done during the login is lost
+mkdir -p $H/.codex-race $H/.codex-flaky; touch $H/.codex-race/LOGGED_OUT $H/.codex-flaky/LOGGED_OUT
+ON_LOGIN='acc use side >/dev/null' acc add codex Race >/dev/null
+check 'add keeps a switch made during login' "$(current codex)" side
+check 'add logs the new account in'       "$([[ -e $H/.codex-race/LOGGED_OUT ]] || echo yes)" yes
+check 'failed login keeps the account'    "$(FAIL_LOGIN=1 acc add codex Flaky 2>&1 >/dev/null; echo "exit $?")" $'acc: codex failed: login exited 1\nacc: added \'flaky\', but it isn\'t logged in; try again with: acc login flaky\nexit 1'
+check 'it stays listed for the retry'     "$(acc ls codex | grep -c ' flaky ')" 1
+check 'acc login retries it'              "$(acc login flaky | tail -1)" 'logged in flaky'
 
 # --- usage, status line, auto
 in_status() { print -r -- "{\"model\":{\"display_name\":\"Opus\"},\"rate_limits\":{\"five_hour\":{\"used_percentage\":$1,\"resets_at\":$(( $(date +%s) + 7200 ))}}}" }
@@ -147,6 +174,9 @@ check 'doctor only flags the extra MCP'   "$(acc doctor | grep '^[✗!]')" '! ct
 touch $H/.claude-cto/LOGGED_OUT
 check 'doctor flags a logged-out account' "$(acc doctor | grep '^✗'; echo "exit ${pipestatus[1]}")" $'✗ cto               not logged in → acc login cto\nexit 1'
 rm $H/.claude-cto/LOGGED_OUT
+cp $H/.zshrc $T/zshrc; print 'alias claude=~/.claude/local/claude' >> $H/.zshrc
+check 'doctor names an alias that skips acc' "$(acc doctor | grep '^! shell')" '! shell     ~/.zshrc aliases claude to ~/.claude/local/claude, which skips acc → remove the alias and put that folder on PATH'
+mv $T/zshrc $H/.zshrc
 check 'sync keeps extra MCP servers'      "$(acc sync | grep mine | cut -c1-34)" '! cto: has MCP servers haz-team la'
 check 'sync --prune removes them'         "$(acc sync --prune | grep '^cto')" 'cto: MCP mine removed'
 check 'sync is idempotent'                "$(acc sync)" 'everything already shares its primary'"'"'s config'

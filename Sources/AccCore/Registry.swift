@@ -23,10 +23,26 @@ public struct Account: Codable, Equatable, Identifiable, Sendable {
 
     /// A `configDir` as written in the registry, with "~" expanded; nil stays nil (the default folder).
     public static func resolve(_ configDir: String?, home: String = userHome()) -> String? {
-        guard let configDir else { return nil }
-        if configDir == "~" { return home }
-        if configDir.hasPrefix("~/") { return home + configDir.dropFirst(1) }
-        return configDir
+        configDir.map { expandingHome($0, home: home) }
+    }
+
+    static func expandingHome(_ path: String, home: String) -> String {
+        if path == "~" { return home }
+        if path.hasPrefix("~/") { return home + path.dropFirst(1) }
+        return path
+    }
+
+    /// A folder as a person typed it, in the form the registry keeps: absolute, without "." or ".."
+    /// or a trailing slash, and written "~/…" under home. Kept relative, it would name a different
+    /// folder in every directory a tool starts in.
+    public static func configDir(typed path: String, cwd: String = FileManager.default.currentDirectoryPath, home: String = userHome()) -> String {
+        guard !path.isEmpty else { return path }
+        let expanded = expandingHome(path, home: home)
+        var parts: [Substring] = []
+        for part in ((expanded.hasPrefix("/") ? "" : cwd + "/") + expanded).split(separator: "/") where part != "." {
+            if part == ".." { _ = parts.popLast() } else { parts.append(part) }
+        }
+        return abbreviatingHome("/" + parts.joined(separator: "/"), home: home)
     }
 
     /// The folder holding this account's files, default or not.
@@ -102,7 +118,7 @@ public struct Registry: Codable, Equatable, Sendable {
         accounts.first { $0.tool == tool && $0.configDir == nil } ?? accounts.first { $0.tool == tool }
     }
 
-    public func validate() throws {
+    public func validate(home: String = userHome()) throws {
         guard version == Registry.currentVersion else { throw AccError.unsupportedVersion(version) }
         var problems: [String] = []
         var seen = Set<String>()
@@ -120,9 +136,11 @@ public struct Registry: Codable, Equatable, Sendable {
             if accounts.filter({ $0.tool == tool && $0.configDir == nil }).count > 1 {
                 problems.append("more than one \(tool.spec.name) account uses the default folder (configDir: null)")
             }
+            // Compared as `account(for:)` finds them, so "~/.codex-x/" and "/Users/me/.codex-x" are one folder.
             let folders = accounts.filter { $0.tool == tool }.compactMap(\.configDir)
-            for folder in Set(folders) where folders.filter({ $0 == folder }).count > 1 {
-                problems.append("more than one \(tool.spec.name) account uses \(folder)")
+            let keys = folders.map { canonical(Account.expandingHome($0, home: home)) }
+            for (i, key) in keys.enumerated() where keys.firstIndex(of: key) == i && keys.filter({ $0 == key }).count > 1 {
+                problems.append("more than one \(tool.spec.name) account uses \(folders[i])")
             }
             let hasAccounts = accounts.contains { $0.tool == tool }
             if let id = current[tool] {
@@ -194,7 +212,7 @@ func modificationDate(_ path: String) -> Date? {
 
 /// `path` with the home folder written as "~", for showing to people.
 public func abbreviatingHome(_ path: String, home: String = userHome()) -> String {
-    path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+    path == home || path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
 }
 
 /// $HOME, as the tools resolve it, falling back to the account's home directory.

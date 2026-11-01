@@ -53,8 +53,13 @@ extension Registry {
     }
 
     /// Moves an account to `index` among the accounts of its own tool (positions drive the 1-9 shortcuts).
+    /// With no account on the default folder, the first one is the primary whose config the others
+    /// share, so it stays first: reordering never changes which config they follow.
     public mutating func move(_ id: String, toToolIndex index: Int) {
         guard let from = accounts.firstIndex(where: { $0.id == id }) else { return }
+        let pinned = primary(for: accounts[from].tool).flatMap { $0.configDir == nil ? nil : $0.id }
+        guard pinned != id else { return }
+        let index = pinned == nil ? index : max(index, 1)
         let account = accounts.remove(at: from)
         let peers = accounts.indices.filter { accounts[$0].tool == account.tool }
         let target = index < peers.count ? peers[max(index, 0)] : (peers.last.map { $0 + 1 } ?? accounts.count)
@@ -83,5 +88,17 @@ extension Registry {
     public func newAccount(tool: Tool, label: String, id: String? = nil) -> Account {
         let id = id ?? suggestedID(for: label)
         return Account(id: id, tool: tool, label: label, configDir: "~/" + tool.spec.newAccountPrefix + id)
+    }
+
+    /// The first step of adding an account, before `Shared.setUp` and its login: listing it first
+    /// means discovery knows its folder while the login fills it, and a failed login leaves an
+    /// account to log in again rather than a stray folder. Labelled "<Tool> <n>" unless `label`
+    /// is given, in its own folder unless `configDir` names one.
+    @discardableResult
+    public mutating func addNew(_ tool: Tool, label: String? = nil, id: String? = nil, configDir: String? = nil) throws -> Account {
+        var account = newAccount(tool: tool, label: label ?? "\(tool.spec.name) \(accounts(for: tool).count + 1)", id: id)
+        if let configDir { account.configDir = configDir }
+        try add(account)
+        return account
     }
 }

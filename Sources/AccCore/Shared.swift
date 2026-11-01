@@ -92,6 +92,25 @@ public enum Shared {
         }
         return changes
     }
+
+    /// Syncs every account that isn't its tool's primary to that primary, in display order: what
+    /// `acc sync`, `acc setup` and the app's Sync Config run. One account failing doesn't stop the rest.
+    public static func syncAll(_ registry: Registry, runners: [Tool: Runner], prune: Bool, home: String = userHome())
+        -> [(account: Account, primary: Account, result: Result<[String], any Error>)] {
+        registry.ordered.compactMap { account in
+            guard let primary = registry.primary(for: account.tool), primary.id != account.id else { return nil }
+            return (account, primary, Result { try sync(account, primary: primary, runner: runners[account.tool], prune: prune, home: home) })
+        }
+    }
+
+    /// Readies an account `Registry.addNew` just listed in `registry`, before its login: creates its
+    /// folder and shares its tool's primary config with it. Returns what it shared. MCP servers are
+    /// added through the tool, so keep this off the main thread.
+    public static func setUp(_ account: Account, in registry: Registry, runner: Runner, home: String = userHome()) throws -> [String] {
+        try runner.prepare(account)
+        guard let primary = registry.primary(for: account.tool), primary.id != account.id else { return [] }
+        return try sync(account, primary: primary, runner: runner, prune: false, home: home)
+    }
 }
 
 /// How one account stands: logged in, and sharing its tool's primary config.
@@ -101,8 +120,6 @@ public struct AccountHealth: Equatable, Sendable {
     public var detail: String?
     public var problems: [String]
     public var issues: [String]
-
-    public var isHealthy: Bool { loggedIn == true && problems.isEmpty }
 
     public static func check(_ account: Account, in registry: Registry, runner: Runner?) -> AccountHealth {
         var health = AccountHealth(loggedIn: nil, email: nil, detail: nil, problems: [], issues: [])

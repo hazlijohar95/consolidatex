@@ -45,6 +45,7 @@ func fail(_ error: AccError) -> Never {
 
 func say(_ line: String = "") { print(line) }
 func warn(_ line: String) { FileHandle.standardError.write(Data("acc: \(line)\n".utf8)) }
+func message(_ error: any Error) -> String { (error as? AccError)?.description ?? error.localizedDescription }
 
 func json<T: Encodable>(_ value: T) throws -> String {
     let encoder = JSONEncoder()
@@ -82,13 +83,12 @@ func describe(_ a: Account) -> String {
 }
 
 func switchTo(_ ref: String, tool: Tool? = nil) throws {
-    var chosen: Account?
-    try store.update { r in
+    let chosen = try store.update { r in
         let account = try r.resolve(ref, tool: tool)
         try r.use(account.id)
-        chosen = account
+        return account
     }
-    if let chosen { say("\(chosen.tool.spec.command) → \(describe(chosen))") }
+    say("\(chosen.tool.spec.command) → \(describe(chosen))")
 }
 
 /// Interactive pick. Returns the chosen account id, or nil if cancelled.
@@ -175,6 +175,9 @@ func doctor(fix: Bool) throws -> Bool {
     if let shell = ShellInit.Shell.from(path: environment["SHELL"]) {
         if !ShellInit.isInstalled(shell) {
             say("! shell     \(shell.rawValue) hook not installed, so `claude`/`codex`/`opencode` ignore acc → acc setup")
+        }
+        for alias in ShellInit.bypassingAliases(shell) {
+            say("! shell     \(abbreviatingHome(alias.file)) aliases \(alias.command) to \(alias.target), which skips acc → remove the alias and put that folder on PATH")
         }
     }
     if case .outdated(let installed, let old, _) = appStatus() {
@@ -314,7 +317,8 @@ func setupApp(assumeYes: Bool) throws {
 
 func setup(assumeYes: Bool) throws {
     say("Consolidatex setup\n")
-    let installed = Array(Runner.locateAll().keys)
+    let runners = Runner.locateAll()
+    let installed = Array(runners.keys)
     for tool in Tool.allCases {
         say(installed.contains(tool) ? "  ✓ \(tool.spec.name)" : "  – \(tool.spec.name) (not installed)")
     }
@@ -327,11 +331,13 @@ func setup(assumeYes: Bool) throws {
         say("\nFound \(candidates.count) account\(candidates.count == 1 ? "" : "s"):")
         candidates.forEach { say("  \(pad($0.tool.spec.name, 12)) \(pad($0.label, 24)) \($0.configDir ?? "default folder")") }
         if ask("Import them?", assumeYes: assumeYes) {
-            for c in candidates {
-                let account = try registry.adopt(c)
-                say("  + \(account.id)  \(account.label)\(account.email.map { "  (\($0))" } ?? "")")
+            // Found again from the file: the app may have listed some while the question waited.
+            let imported = try store.update { r in
+                let adopted = try Discovery.find(excluding: r).filter { installed.contains($0.tool) }.map { try r.adopt($0) }
+                return (registry: r, adopted: adopted)
             }
-            try store.save(registry)
+            registry = imported.registry
+            imported.adopted.forEach { say("  + \($0.id)  \($0.label)\($0.email.map { "  (\($0))" } ?? "")") }
         }
     }
 
@@ -362,10 +368,11 @@ func setup(assumeYes: Bool) throws {
         registry.primary(for: a.tool).map { $0.id != a.id && !Shared.issues(a, primary: $0).isEmpty } ?? false
     }
     if !drifting.isEmpty, ask("\n\(drifting.count) account\(drifting.count == 1 ? "" : "s") don't share config (rules, settings, skills, MCP servers) with their tool's primary. Share it?", assumeYes: assumeYes) {
-        for account in drifting {
-            let primary = registry.primary(for: account.tool)!
-            let changes = try Shared.sync(account, primary: primary, runner: try? Runner.locate(account.tool), prune: false)
-            if !changes.isEmpty { say("  \(account.id): \(changes.joined(separator: ", "))") }
+        for (account, _, result) in Shared.syncAll(registry, runners: runners, prune: false) {
+            switch result {
+            case .success(let changes): if !changes.isEmpty { say("  \(account.id): \(changes.joined(separator: ", "))") }
+            case .failure(let error): warn("\(account.id): \(message(error))")
+            }
         }
     }
 
@@ -410,13 +417,11 @@ func main() throws {
     case "auto":
         let registry = try store.load()
         let usage = usages.all(registry)
-        let tools = args.first.flatMap(tool(named:)).map { [$0] } ?? registry.tools.filter { t in registry.accounts(for: t).contains { usage[$0.id] != nil } }
-        guard !tools.isEmpty else { throw AccError.usage("no usage recorded yet; use your accounts for a while first") }
-        for t in tools {
-            if let best = registry.byHeadroom(t, usage).first {
-                try switchTo(best.id)
-                say("  \(UsageFormat.summary(usage[best.id], tool: t))")
-            }
+        let picks = registry.mostLeft(usage, tool: args.first.flatMap(tool(named:)))
+        guard !picks.isEmpty else { throw AccError.usage("no usage recorded yet; use your accounts for a while first") }
+        for best in picks {
+            try switchTo(best.id)
+            say("  \(UsageFormat.summary(usage[best.id], tool: best.tool))")
         }
 
     case "report":
@@ -450,21 +455,27 @@ func main() throws {
             throw AccError.usage("usage: acc add <claude|codex|opencode> [<name>] [--id <id>] [--dir <folder>]")
         }
         args.removeFirst()
-        var registry = try store.loadOrEmpty()
-        let label = args.isEmpty ? "\(t.spec.name) \(registry.accounts(for: t).count + 1)" : args.joined(separator: " ")
-        var account = registry.newAccount(tool: t, label: label, id: id)
-        if let dir { account.configDir = dir }
-        var next = registry
-        try next.add(account)
+        let label = args.isEmpty ? nil : args.joined(separator: " ")
         let runner = try Runner.locate(t)
-        try runner.prepare(account)
-        if let primary = registry.primary(for: t) {
-            for change in try Shared.sync(account, primary: primary, runner: runner, prune: false) { say("  \(change)") }
+        let configDir = dir.map { Account.configDir(typed: $0) }
+        let (account, registry) = try store.update { r in (try r.addNew(t, label: label, id: id, configDir: configDir), r) }
+        do {
+            for change in try Shared.setUp(account, in: registry, runner: runner) { say("  \(change)") }
+        } catch {
+            warn(message(error))
+            throw AccError.system("added '\(account.id)', but couldn't share its config; finish with: acc sync, then acc login \(account.id)")
         }
-        account.email = try ensureLoggedIn(account, runner: runner).email
-        try registry.add(account)
-        try store.save(registry)
-        say("added \(describe(account))")
+        let status: Runner.AuthStatus
+        do {
+            status = try ensureLoggedIn(account, runner: runner)
+        } catch {
+            warn(message(error))
+            throw AccError.system("added '\(account.id)', but it isn't logged in; try again with: acc login \(account.id)")
+        }
+        try store.update { $0.recordEmail(status.email, for: account.id) }
+        var added = account
+        added.email = status.email
+        say("added \(describe(added))")
 
     case "login":
         guard let ref = args.first else { throw AccError.usage("usage: acc login <account>") }
@@ -487,27 +498,30 @@ func main() throws {
 
     case "rm":
         guard let ref = args.first else { throw AccError.usage("usage: acc rm <account>") }
-        var removed: Account?
-        try store.update { r in
+        let removed = try store.update { r in
             let account = try r.resolve(ref)
             try r.remove(account.id)
-            removed = account
+            return account
         }
-        if let removed { say("removed \(removed.id); its folder \(removed.folder()) was left in place") }
+        say("removed \(removed.id); its folder \(removed.folder()) was left in place")
 
     case "doctor":
         if try !doctor(fix: flag("--fix", in: &args)) { exit(1) }
 
     case "sync":
         let prune = flag("--prune", in: &args)
-        let registry = try store.load()
-        var changed = false
-        for account in registry.ordered {
-            guard let primary = registry.primary(for: account.tool), primary.id != account.id else { continue }
-            let changes = try Shared.sync(account, primary: primary, runner: try? Runner.locate(account.tool), prune: prune)
-            if !changes.isEmpty { say("\(account.id): \(changes.joined(separator: ", "))"); changed = true }
+        var changed = false, failed = false
+        for (account, primary, result) in Shared.syncAll(try store.load(), runners: Runner.locateAll(), prune: prune) {
+            switch result {
+            case .success(let changes):
+                if !changes.isEmpty { say("\(account.id): \(changes.joined(separator: ", "))"); changed = true }
+            case .failure(let error):
+                warn("\(account.id): \(message(error))")
+                failed = true
+            }
             for issue in Shared.issues(account, primary: primary) { say("! \(account.id): \(issue)") }
         }
+        if failed { exit(1) }
         if !changed { say("everything already shares its primary's config") }
 
     case "setup":

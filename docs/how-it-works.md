@@ -41,14 +41,15 @@ A rule that both the CLI and the app need belongs in AccCore. If a view starts d
 ```
 
 - `configDir: null` means the tool's default folder.
+- `acc add --dir` stores the folder absolute, without a trailing slash, and written `~/…` under home (`Account.configDir(typed:)`). A relative folder would name a different folder in every directory a tool starts in.
 - `current` names the account each tool's next session starts on.
 - `removed` lists folders that `acc rm` took out, so discovery doesn't add them back. `Registry.Removed.matches` compares folders after expanding `~` and resolving symlinks, so `~/.codex-old` and `/Users/me/.codex-old` count as the same folder.
 
-`Registry.validate()` rejects a registry where ids are invalid or repeat, where a tool has no current account, or where two accounts of one tool share a folder. `RegistryStore.save` validates before it writes. It writes a temporary file next to `accounts.json`, then renames it over the original, so a reader never sees half a file. The edits that people make (`add`, `use`, `rename`, `remove`, `move`) are methods on `Registry` in `Editing.swift`. The CLI and the app share them, so both enforce the same rules.
+`Registry.validate()` rejects a registry where ids are invalid or repeat, where a tool has no current account, or where two accounts of one tool share a folder, compared the way `matches` compares them. `RegistryStore.save` validates before it writes. It writes a temporary file next to `accounts.json`, then renames it over the original, so a reader never sees half a file. Changes go through `RegistryStore.update`, which reads the file, applies the change, and saves only if something changed, so a change that makes no difference doesn't wake the app's file watcher. The edits that people make (`add`, `use`, `rename`, `remove`, `move`) are methods on `Registry` in `Editing.swift`. The CLI and the app share them, so both enforce the same rules.
 
 ## Starting a session on an account
 
-`acc setup` adds one line to the shell's startup file, for example `eval "$(acc shell-init zsh)"`. That line defines `claude`, `codex` and `opencode` as shell functions, each of which runs `acc launch <tool> -- "$@"`.
+`acc setup` adds one line to the shell's startup file, for example `eval "$(acc shell-init zsh)"`. That line defines `claude`, `codex` and `opencode` as shell functions, each of which runs `acc launch <tool> -- "$@"`. It runs at every shell start, so a new `acc` changes the functions without touching the startup file. They are written `function claude { … }`, because `claude() { … }` under an alias named `claude` is an error in zsh and bash that stops the whole hook. An alias still wins when typed. One that starts with the command, such as `alias claude='claude --flag'`, reaches the function. One that points elsewhere skips acc, and `acc doctor` reports one in the startup file.
 
 `launch` in `main.swift` picks the account in this order:
 
@@ -56,13 +57,13 @@ A rule that both the CLI and the app need belongs in AccCore. If a view starts d
 2. If the tool's variable is already set, for example inherited from a parent session, leave it alone.
 3. Otherwise use the tool's current account.
 
-`Runner.exec` then sets or unsets the variable and replaces the `acc` process with the real binary through `execv`. The tool ends up as a direct child of the shell, with no wrapper left running. If the registry is missing, the tool starts on its default account. If the registry is broken, `launch` prints the error, then starts the tool on its default account anyway. A broken `accounts.json` never stops `claude` from starting.
+`Runner.exec` then replaces the `acc` process with the real binary through `execve`, with the variable set or unset by `Runner.environment(for:)`, the same code `acc run`, logins and status checks use. The tool ends up as a direct child of the shell, with no wrapper left running. If the registry is missing, the tool starts on its default account. If the registry is broken, `launch` prints the error, then starts the tool on its default account anyway. A broken `accounts.json` never stops `claude` from starting.
 
 Picking an account only writes `current`. Nothing reaches running sessions, because their variable was fixed when they started.
 
 ## Shared config
 
-Every account of a tool shares config with that tool's main account. The main account is the one on the default folder, or else the first one listed (`Registry.primary`). `Shared.link` symlinks each of the tool's `sharedItems` from the main account's folder into the other accounts' folders. For Claude Code these are `CLAUDE.md`, `settings.json`, `skills`, `agents`, `commands`, `plugins` and `hooks`. `Shared.link` never replaces a real file. It reports one instead, and `acc doctor` shows it.
+Every account of a tool shares config with that tool's main account. The main account is the one on the default folder, or else the first one listed (`Registry.primary`). Reordering can't change it, because `Registry.move` keeps a first-listed main account first. `Shared.link` symlinks each of the tool's `sharedItems` from the main account's folder into the other accounts' folders. For Claude Code these are `CLAUDE.md`, `settings.json`, `skills`, `agents`, `commands`, `plugins` and `hooks`. `Shared.link` never replaces a real file. It reports one instead, and `acc doctor` shows it.
 
 Claude Code keeps user-scope MCP servers in each account's own `.claude.json`, so they can't be shared with a symlink. `Shared.sync` copies them instead, through `claude mcp add-json` and `claude mcp remove`, so Claude Code's own file locking applies.
 
@@ -130,7 +131,9 @@ For the past, `TranscriptLog` files each reply's tokens under an `Origin` taken 
 3. That with the plan added, such as "me · Team".
 4. Its folder name.
 
-`acc setup` shows what it found and asks before adding it. The menu bar app adds found accounts by itself, every 60 seconds and on every registry change, but only for tools it can find. The search runs inside the same edit that saves the result. That way it always works from the file on disk, and a folder can't be added twice.
+`acc setup` shows what it found and asks before adding it. The menu bar app adds found accounts by itself, every 60 seconds and on every registry change, but only for tools it can find. Both run the search inside the same `RegistryStore.update` that saves the result, `acc setup` again after its question. That way the search always works from the file on disk, and a folder can't be added twice.
+
+Adding an account lists it before anything else happens: `Registry.addNew` inside an update, then `Shared.setUp` to create the folder and share the primary's config, then the tool's login. Discovery already knows the folder while the login fills it, and a failed login leaves the account listed for `acc login` to retry, instead of a stray folder that discovery would add under a second name.
 
 ## The menu bar app
 

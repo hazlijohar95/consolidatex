@@ -272,7 +272,7 @@ func write(_ text: String, to path: String) {
     }
 
     @Test func shellScripts() {
-        #expect(ShellInit.script(for: .zsh).contains(#"codex() { command acc launch codex -- "$@"; }"#))
+        #expect(ShellInit.script(for: .zsh).contains(#"function codex { command acc launch codex -- "$@"; }"#))
         #expect(ShellInit.script(for: .fish).contains("function opencode --wraps opencode\n    command acc launch opencode -- $argv\nend"))
     }
 
