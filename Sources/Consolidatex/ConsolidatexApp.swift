@@ -7,7 +7,7 @@ import SwiftUI
 
 @MainActor
 final class Model: ObservableObject {
-    enum State {
+    enum State: Equatable {
         case loaded(Registry)
         case failed(String)
     }
@@ -93,11 +93,17 @@ final class Model: ObservableObject {
 
     func reload() {
         do {
-            state = .loaded(try store.loadOrEmpty())
+            setState(.loaded(try store.loadOrEmpty()))
         } catch {
-            state = .failed(String(describing: error))
+            setState(.failed(String(describing: error)))
         }
         adoptNewAccounts()
+    }
+
+    /// The folder watcher and the minute's discovery land here with nothing new most of the time,
+    /// and every publish redraws every view of the model.
+    private func setState(_ next: State) {
+        if next != state { state = next }
     }
 
     /// Lists account folders that appear on disk, such as one another app or a manual login created.
@@ -128,11 +134,11 @@ final class Model: ObservableObject {
             // An unchanged save would wake the file watcher, which reloads and lands back here, and
             // would clear an error the person hasn't read yet.
             guard next != current else {
-                state = .loaded(next)
+                setState(.loaded(next))
                 return
             }
             try store.save(next)
-            state = .loaded(next)
+            setState(.loaded(next))
             lastError = nil
         } catch {
             lastError = String(describing: error)

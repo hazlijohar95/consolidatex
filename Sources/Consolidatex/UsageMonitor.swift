@@ -140,7 +140,7 @@ final class UsageMonitor: ObservableObject {
                 if read != self.identities { self.identities = read }
                 self.update(readings, spent: spent, at: now)
                 self.readingLocal = false
-                if !self.fetching { self.spinning = false }
+                if !self.fetching, self.spinning { self.spinning = false }
             }
         }
     }
@@ -163,15 +163,17 @@ final class UsageMonitor: ObservableObject {
             }
             for case let (id, .reading(reading)) in outcomes { _ = try? usages.store.merge(reading, for: id, at: now) }
             await MainActor.run {
+                var problems = self.problems
                 for (id, outcome) in outcomes {
                     self.schedule.record(outcome, for: id, at: now)
-                    self.problems[id] = switch outcome {
+                    problems[id] = switch outcome {
                     case .reading: nil
                     case .failed(let reason): LiveUsage.Failure(reason, at: now)
                     case .retryAfter(let seconds):
                         self.readings[id] == nil ? LiveUsage.Failure("Anthropic is pacing usage checks; next in \(Int(seconds / 60) + 1) min", at: now) : nil
                     }
                 }
+                if problems != self.problems { self.problems = problems }
                 UserDefaults.standard.set(try? JSONEncoder().encode(self.schedule), forKey: Keys.schedule)
                 self.fetching = false
                 self.readLocal()

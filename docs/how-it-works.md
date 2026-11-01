@@ -148,7 +148,7 @@ The app starts with launchd's short `PATH`, which misses tools installed through
 
 A failed live read shows on its account as a `LiveUsage.Failure` until any newer reading arrives. A reading written after the failure means the account works again, as when one message refreshes an expired login, so the failure clears without waiting up to 5 minutes for the next live read.
 
-A slow network request never delays the local numbers. Blocking work, such as waiting on `codex app-server` or on `security` reading the keychain, runs on a dispatch thread. It would otherwise hold one of Swift concurrency's few shared threads, which other tasks need. Only a refresh the user asks for spins the refresh icon. Timer ticks change nothing that is published unless the numbers change, so the views don't redraw for nothing.
+A slow network request never delays the local numbers. Blocking work, such as waiting on `codex app-server` or on `security` reading the keychain, runs on a dispatch thread. It would otherwise hold one of Swift concurrency's few shared threads, which other tasks need. Only a refresh the user asks for spins the refresh icon. Timer ticks change nothing that is published unless the numbers change, and the minute's discovery and the folder watcher publish the registry only when it differs, so the views don't redraw for nothing. A window that resets by the clock changes nothing published either, so the menu bar label and Manage's usage bars keep a minute clock of their own, as the panel does.
 
 ⌥⌘A opens `QuickSwitcher`, a floating window for switching from any app. `HotKey` registers the shortcut through Carbon's hot-key API, which needs no accessibility permission.
 

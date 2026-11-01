@@ -187,16 +187,18 @@ struct UsageBars: View {
     let tool: Tool
 
     var body: some View {
-        let now = Date()
-        VStack(alignment: .trailing, spacing: 3) {
-            if let usage, !usage.windows.isEmpty {
-                ForEach(usage.windows, id: \.label) { window in bar(window, now) }
-            } else {
-                Text(UsageFormat.empty(tool: tool)).font(.caption).foregroundStyle(.tertiary)
+        // Its own clock: a window that resets changes nothing that's published.
+        TimelineView(.everyMinute) { context in
+            VStack(alignment: .trailing, spacing: 3) {
+                if let usage, !usage.windows.isEmpty {
+                    ForEach(usage.windows, id: \.label) { window in bar(window, context.date) }
+                } else {
+                    Text(UsageFormat.empty(tool: tool)).font(.caption).foregroundStyle(.tertiary)
+                }
             }
+            .frame(width: 134)
+            .help(UsageFormat.summary(usage, tool: tool, at: context.date))
         }
-        .frame(width: 134)
-        .help(UsageFormat.summary(usage, tool: tool))
     }
 
     private func bar(_ window: Usage.Window, _ now: Date) -> some View {

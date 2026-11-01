@@ -5,19 +5,25 @@ import SwiftUI
 /// ✳︎ and the shortest window of the account being worked on, else of the first tool's current account.
 struct MenuBarLabel: View {
     @ObservedObject var model: Model
+    /// Its own clock: a window that resets drops to 0% by the time alone, and nothing is published
+    /// then. A TimelineView doesn't tick in a menu bar label.
+    @State private var now = Date()
+    private static let minutes = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        let now = Date()
         let account = model.accountInUse(at: now) ?? model.registry.flatMap { r in r.tools.first.flatMap(r.current(for:)) }
-        switch model.state {
-        case .failed: Text("✳︎ ⚠︎")
-        case .loaded:
-            if let window = account.flatMap({ model.monitor.readings[$0.id]?.windows.first }) {
-                Text("✳︎ \(Int(window.used(at: now).rounded()))%")
-            } else {
-                Text("✳︎")
+        Group {
+            switch model.state {
+            case .failed: Text("✳︎ ⚠︎")
+            case .loaded:
+                if let window = account.flatMap({ model.monitor.readings[$0.id]?.windows.first }) {
+                    Text("✳︎ \(Int(window.used(at: now).rounded()))%")
+                } else {
+                    Text("✳︎")
+                }
             }
         }
+        .onReceive(Self.minutes) { now = $0 }
     }
 }
 
