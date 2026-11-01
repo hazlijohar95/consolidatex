@@ -68,7 +68,7 @@ Claude Code keeps user-scope MCP servers in each account's own `.claude.json`, s
 
 ## Usage
 
-`Usage` in `Usage.swift` is one account's reading: a list of `Usage.Window` values and the time it was read. A window has a length in minutes, an optional model name for per-model limits ("7d Fable"), the percentage used, and a reset time. A window whose reset time has passed counts as 0% used.
+`Usage` in `Usage.swift` is one account's reading: a list of `Usage.Window` values and the time it was read. A window has a length in minutes, an optional model name for per-model limits ("7d Fable"), the percentage used, and a reset time. A window kept from an older reading also has the time it was read. A window whose reset time has passed counts as 0% used.
 
 Four sources write readings:
 
@@ -79,14 +79,14 @@ Four sources write readings:
 | Anthropic's usage endpoint (`ClaudeUsageAPI`) | Claude Code | Every 5 minutes, only with live Claude usage on |
 | `codex app-server` (`CodexAppServer.swift`) | Codex | Every 5 minutes, in the menu bar app |
 
-`UsageStore` keeps one file per account in `~/.config/acc/usage/`. `UsageStore.merge` folds a new reading into the stored one, using `Usage.merged(over:)`. Windows the new reading reports replace the stored ones. Windows it doesn't report are kept until they reset. The status line reports only the 5-hour and 7-day windows, and the API also reports per-model ones, so this rule keeps the per-model windows between API reads. Claude Code redraws its status line often, so `merge` rewrites an unchanged reading at most once a minute. For Codex, `Usages.usage(for:)` takes whichever of the stored reading and the session-file reading is newer.
+`UsageStore` keeps one file per account in `~/.config/acc/usage/`. `UsageStore.merge` folds a new reading into the stored one, using `Usage.merged(over:)`. Windows the new reading reports replace the stored ones. Windows it doesn't report are kept until they reset, along with the time they were read. The status line reports only the 5-hour and 7-day windows, and the API also reports per-model ones, so this rule keeps the per-model windows between API reads. Claude Code redraws its status line often, so `merge` rewrites an unchanged reading at most once a minute. For Codex, `Usages.usage(for:)` takes whichever of the stored reading and the session-file reading is newer.
 
-The two live sources sit behind `LiveUsage`. `LiveUsage.fetch` asks the right service for one account. `LiveUsage.Schedule` spaces requests 5 minutes apart per account, and longer when a server sends `Retry-After`. The menu bar app saves the schedule, so restarting the app doesn't skip a wait. The two sources differ on consent. Codex asks OpenAI with its own login, so the app does it without asking. The Claude read sends the account's login token, so it waits for the user to turn it on.
+The two live sources sit behind `LiveUsage`. `LiveUsage.fetch` asks the right service for one account. `LiveUsage.Schedule` spaces requests 5 minutes apart per account, and longer when a server sends `Retry-After`. `Schedule.toAsk` asks an account when the schedule allows it and the account has no reading, or has a window read 5 minutes ago or more. An account in use still gets asked, because its status line keeps the 5-hour and 7-day windows fresh while its per-model windows age. The menu bar app saves the schedule, so restarting the app doesn't skip a wait. The two sources differ on consent. Codex asks OpenAI with its own login, so the app does it without asking. The Claude read sends the account's login token, so it waits for the user to turn it on.
 
 Two decisions read from usage:
 
 - `Registry.roomiest` suggests the account with the most of its limits left. It skips accounts at 90% or more. The status line shows the suggestion once the current account reaches 90%, and the panel marks it **Most tokens left**.
-- `Usage.forecast` projects when a window fills if use continues at its average rate since the window opened. It reports nothing for a window under 10% used, a window less than a tenth of the way through, or a projection that falls in the past or within the window's last 5%. A 5-hour pace only holds while someone is working, so windows shorter than a day count only while the account is active.
+- `Usage.forecast` projects when a window fills if use continues at its average rate since the window opened, as of when that window was read. It reports nothing for a window under 10% used, a window less than a tenth of the way through, or a projection that falls in the past or within the window's last 5%. A 5-hour pace only holds while someone is working, so windows shorter than a day count only while the account is active.
 
 ## Following limits
 
@@ -141,9 +141,9 @@ The app starts with launchd's short `PATH`, which misses tools installed through
 `UsageMonitor` runs every 15 seconds and whenever the panel opens. It does two separate jobs:
 
 - `readLocal` reads usage files, transcripts and session files. It doesn't touch the network.
-- `fetchLive` asks the live sources for accounts that are due. It skips accounts whose stored reading is less than 5 minutes old. When it finishes, it runs `readLocal` again.
+- `fetchLive` asks the live sources for the accounts `Schedule.toAsk` picks. It skips an account when every window of its stored reading was read in the last 5 minutes. When it finishes, it runs `readLocal` again.
 
-A failed live read shows on its account as a `LiveUsage.Failure` until any newer reading arrives. An account in use is never asked, since its status line keeps its reading fresh, so waiting for the next live read would keep a failure such as an expired login on screen after the login was refreshed.
+A failed live read shows on its account as a `LiveUsage.Failure` until any newer reading arrives. An account in use with no per-model limit is never asked, since its status line reports every window it has. Waiting for the next live read would keep a failure such as an expired login on screen after the login was refreshed.
 
 A slow network request never delays the local numbers. Blocking work, such as waiting on `codex app-server` or on `security` reading the keychain, runs on a dispatch thread. It would otherwise hold one of Swift concurrency's few shared threads, which other tasks need. Only a refresh the user asks for spins the refresh icon. Timer ticks change nothing that is published unless the numbers change, so the views don't redraw for nothing.
 

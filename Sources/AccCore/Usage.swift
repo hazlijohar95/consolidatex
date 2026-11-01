@@ -10,14 +10,17 @@ public struct Usage: Codable, Equatable, Sendable {
         public let usedPercentage: Double
         /// Nil while the window hasn't started.
         public let resetsAt: Date?
+        /// When this window was read, for one kept from an older reading; nil for one read with its reading.
+        public let readAt: Date?
 
-        private enum CodingKeys: String, CodingKey { case minutes, model, usedPercentage, resetsAt, label }
+        private enum CodingKeys: String, CodingKey { case minutes, model, usedPercentage, resetsAt, readAt, label }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             model = try c.decodeIfPresent(String.self, forKey: .model)
             usedPercentage = try c.decode(Double.self, forKey: .usedPercentage)
             resetsAt = try c.decodeIfPresent(Date.self, forKey: .resetsAt)
+            readAt = try c.decodeIfPresent(Date.self, forKey: .readAt)
             // Files written before windows carried minutes have only a label: "5h", "7d", "30d".
             minutes = try c.decodeIfPresent(Int.self, forKey: .minutes) ?? Self.minutes(label: c.decode(String.self, forKey: .label))
         }
@@ -28,6 +31,7 @@ public struct Usage: Codable, Equatable, Sendable {
             try c.encodeIfPresent(model, forKey: .model)
             try c.encode(usedPercentage, forKey: .usedPercentage)
             try c.encodeIfPresent(resetsAt, forKey: .resetsAt)
+            try c.encodeIfPresent(readAt, forKey: .readAt)
         }
 
         static func minutes(label: String) -> Int {
@@ -35,11 +39,12 @@ public struct Usage: Codable, Equatable, Sendable {
             return switch unit { case "d": n * 1440; case "h": n * 60; case "m": n; default: 0 }
         }
 
-        public init(minutes: Int, model: String? = nil, usedPercentage: Double, resetsAt: Date?) {
+        public init(minutes: Int, model: String? = nil, usedPercentage: Double, resetsAt: Date?, readAt: Date? = nil) {
             self.minutes = minutes
             self.model = model
             self.usedPercentage = usedPercentage
             self.resetsAt = resetsAt
+            self.readAt = readAt
         }
 
         /// "5h", "7d", "7d Fable".
@@ -91,21 +96,28 @@ public struct Usage: Codable, Equatable, Sendable {
         windows.filter { $0.used(at: now) > 0 }.max { $0.usedPercentage < $1.usedPercentage }
     }
 
+    /// When the window read longest ago was read.
+    public var oldestRead: Date { windows.map(readTime(of:)).min() ?? recordedAt }
+
+    private func readTime(of window: Window) -> Date { window.readAt ?? recordedAt }
+
     /// The first window this account fills at its current pace. A pace over hours only holds while
     /// someone is working on the account, so windows shorter than a day count only when `active`.
     public func forecast(at now: Date, active: Bool) -> Forecast? {
         guard !isCapped(at: now) else { return nil }
         return windows.filter { active || $0.minutes >= 1440 }
-            .compactMap { w in w.projectedCap(readAt: recordedAt, now: now).map { Forecast(window: w, capsAt: $0) } }
+            .compactMap { w in w.projectedCap(readAt: readTime(of: w), now: now).map { Forecast(window: w, capsAt: $0) } }
             .min { $0.capsAt < $1.capsAt }
     }
 
-    /// This reading plus the windows of `older` it doesn't report and that haven't reset. The status
-    /// line reports two windows, Anthropic's usage API also per-model ones, and both feed one store.
+    /// This reading plus the windows of `older` it doesn't report and that haven't reset, each still
+    /// dated when it was read. The status line reports two windows, Anthropic's usage API also
+    /// per-model ones, and both feed one store.
     public func merged(over older: Usage?, at now: Date) -> Usage {
-        let kept = (older?.windows ?? []).filter { old in
+        guard let older else { return self }
+        let kept = older.windows.filter { old in
             !windows.contains { $0.limitsSameThing(as: old) } && old.resetsAt.map { $0 > now } ?? false
-        }
+        }.map { Window(minutes: $0.minutes, model: $0.model, usedPercentage: $0.usedPercentage, resetsAt: $0.resetsAt, readAt: older.readTime(of: $0)) }
         return Usage(windows: windows + kept, recordedAt: recordedAt)
     }
 }

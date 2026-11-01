@@ -133,15 +133,14 @@ final class UsageMonitor: ObservableObject {
         }
     }
 
-    /// Asks Codex and, with consent, Anthropic, for accounts whose reading is older than the spacing.
+    /// Asks Codex and, with consent, Anthropic, for accounts with a window read longer ago than the spacing.
     private func fetchLive(force: Bool) {
         guard !fetching else { return }
         let now = Date(), codex = runners[.codex]
         // Codex asks OpenAI with its own login, so it needs no opt-in; Claude's read sends the login token.
         let askable = registry.accounts.filter { $0.tool == .claude ? liveClaude : $0.tool == .codex && codex != nil }
-        let due = Set(schedule.due(askable.map(\.id), at: now, force: force))
-        // A reading the status line or a session file wrote within the spacing is as good as asking.
-        let live = askable.filter { due.contains($0.id) && (force || readings[$0.id].map { now.timeIntervalSince($0.recordedAt) >= LiveUsage.spacing } ?? true) }
+        let due = Set(schedule.toAsk(askable.map(\.id), readings: readings, at: now, force: force))
+        let live = askable.filter { due.contains($0.id) }
         guard !live.isEmpty else { return }
         fetching = true
         let usages = self.usages
@@ -170,7 +169,8 @@ final class UsageMonitor: ObservableObject {
 
     private func update(_ readings: [String: Usage], spent: [String: [Origin: Int]], at now: Date) {
         if readings != self.readings { self.readings = readings }
-        // A busy account is read from its status line rather than asked, so only a newer reading can clear its failure.
+        // A busy account with no per-model limit is never asked, its status line reporting every window,
+        // so any newer reading clears its failure.
         let open = problems.filter { !$0.value.isAnswered(by: readings[$0.key]) }
         if open != problems { problems = open }
         let nowCapped = Set(readings.filter { $0.value.isCapped(at: now) }.keys)

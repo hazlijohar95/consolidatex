@@ -54,7 +54,16 @@ public enum LiveUsage {
 
         public init() {}
 
-        public func due(_ ids: [String], at now: Date, force: Bool = false) -> [String] {
+        /// The accounts to ask now: due, and with no reading or a window read `spacing` ago or more.
+        /// Claude Code's status line keeps an account's shared windows fresh while it's in use, but
+        /// not its per-model ones. `force` asks every account that isn't waiting out a Retry-After.
+        public func toAsk(_ ids: [String], readings: [String: Usage], at now: Date, force: Bool = false) -> [String] {
+            due(ids, at: now, force: force).filter { id in
+                force || readings[id].map { now.timeIntervalSince($0.oldestRead) >= LiveUsage.spacing } ?? true
+            }
+        }
+
+        func due(_ ids: [String], at now: Date, force: Bool = false) -> [String] {
             ids.filter { ((force ? blocked : next)[$0] ?? .distantPast) <= now }
         }
 
