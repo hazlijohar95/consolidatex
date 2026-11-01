@@ -102,7 +102,8 @@ enum CopiedBytes {
         guard lstat(path, &info) == 0 else { throw failure("read", path) }
         guard info.st_mode & S_IFMT == S_IFREG else { return }
         let value = Array(String(info.st_size).utf8)
-        guard setxattr(path, attribute, value, value.count, 0, XATTR_NOFOLLOW) == 0 else { throw failure("mark", path) }
+        // A volume without extended attributes can't hold the mark; the copy still moves the conversation.
+        guard setxattr(path, attribute, value, value.count, 0, XATTR_NOFOLLOW) == 0 || errno == ENOTSUP else { throw failure("mark", path) }
     }
 
     /// How many bytes at the start of an open file came with a copy: 0 for a file never copied.

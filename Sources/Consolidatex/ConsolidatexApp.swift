@@ -318,7 +318,8 @@ final class Model: ObservableObject {
     /// A login finished in Terminal, or by hand after the app gave up on it: the tool now says the
     /// account is logged in, so its row stops asking and its login is read again.
     private func finishLogins(_ results: [String: AccountHealth]) {
-        for id in logins.keys where results[id]?.loggedIn == true {
+        // A login running in the app reports its own end; a check meanwhile sees the old login.
+        for (id, login) in logins where login != .waiting && results[id]?.loggedIn == true {
             logins[id] = nil
             monitor.rereadIdentity(of: id)
         }
