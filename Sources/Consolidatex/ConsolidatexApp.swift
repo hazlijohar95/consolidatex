@@ -76,7 +76,11 @@ final class Model: ObservableObject {
         reload()
         watch()
         discovery = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.adoptNewAccounts() }
+            MainActor.assumeIsolated {
+                // Also finds a tool installed while the app runs; a change to `runners` adopts its folders.
+                self?.locateTools()
+                self?.adoptNewAccounts()
+            }
         }
     }
 
@@ -88,7 +92,9 @@ final class Model: ObservableObject {
     var installedTools: [Tool] { Tool.allCases.filter { runners[$0] != nil } }
 
     private func locateTools() {
-        runners = Runner.locateAll()
+        let found = Runner.locateAll()
+        // Unchanged nearly every minute, and every assignment redraws the views and runs adoption.
+        if found.mapValues(\.executable) != runners.mapValues(\.executable) { runners = found }
     }
 
     func reload() {

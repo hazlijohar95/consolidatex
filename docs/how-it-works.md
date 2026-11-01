@@ -131,7 +131,7 @@ For the past, `TranscriptLog` files each reply's tokens under an `Origin` taken 
 3. That with the plan added, such as "me · Team".
 4. Its folder name.
 
-`acc setup` shows what it found and asks before adding it. The menu bar app adds found accounts by itself, every 60 seconds and on every registry change, but only for tools it can find. Both run the search inside the same `RegistryStore.update` that saves the result, `acc setup` again after its question. That way the search always works from the file on disk, and a folder can't be added twice.
+`acc setup` shows what it found and asks before adding it. The menu bar app adds found accounts by itself, every 60 seconds and on every registry change, but only for tools it can find. It looks for the tools every 60 seconds too, so one installed while the app runs counts from the next minute. Both run the search inside the same `RegistryStore.update` that saves the result, `acc setup` again after its question. That way the search always works from the file on disk, and a folder can't be added twice.
 
 Adding an account lists it before anything else happens: `Registry.addNew` inside an update, then `Shared.setUp` to create the folder and share the primary's config, then the tool's login. Discovery already knows the folder while the login fills it, and a failed login leaves the account listed for `acc login` to retry, instead of a stray folder that discovery would add under a second name.
 
