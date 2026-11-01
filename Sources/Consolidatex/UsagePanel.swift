@@ -195,7 +195,7 @@ private struct ToolSection: View {
                          isPicked: choosing && registry.isCurrent(account),
                          isNext: choosing && next?.id == account.id && readings[account.id] != nil,
                          isActive: model.monitor.isActive(account, at: now),
-                         problem: model.monitor.problems[account.id],
+                         problem: model.monitor.problems[account.id]?.reason,
                          login: model.logins[account.id],
                          running: model.monitor.running[account.id] ?? [],
                          mode: focus?.id == account.id ? focus?.mode : nil,

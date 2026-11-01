@@ -143,6 +143,8 @@ The app starts with launchd's short `PATH`, which misses tools installed through
 - `readLocal` reads usage files, transcripts and session files. It doesn't touch the network.
 - `fetchLive` asks the live sources for accounts that are due. It skips accounts whose stored reading is less than 5 minutes old. When it finishes, it runs `readLocal` again.
 
+A failed live read shows on its account as a `LiveUsage.Failure` until any newer reading arrives. An account in use is never asked, since its status line keeps its reading fresh, so waiting for the next live read would keep a failure such as an expired login on screen after the login was refreshed.
+
 A slow network request never delays the local numbers. Blocking work, such as waiting on `codex app-server` or on `security` reading the keychain, runs on a dispatch thread. It would otherwise hold one of Swift concurrency's few shared threads, which other tasks need. Only a refresh the user asks for spins the refresh icon. Timer ticks change nothing that is published unless the numbers change, so the views don't redraw for nothing.
 
 ⌥⌘A opens `QuickSwitcher`, a floating window for switching from any app. `HotKey` registers the shortcut through Carbon's hot-key API, which needs no accessibility permission.

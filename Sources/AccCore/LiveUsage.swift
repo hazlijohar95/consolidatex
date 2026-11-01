@@ -12,6 +12,20 @@ public enum LiveUsage {
 
     public static let spacing: TimeInterval = 300
 
+    /// Why a live read failed, and when. A reading recorded after it answers it: the status line's,
+    /// for one, once the account is used again, which also refreshes an expired login.
+    public struct Failure: Equatable, Sendable {
+        public let reason: String
+        public let at: Date
+
+        public init(_ reason: String, at: Date) {
+            self.reason = reason
+            self.at = at
+        }
+
+        public func isAnswered(by reading: Usage?) -> Bool { reading.map { $0.recordedAt > at } ?? false }
+    }
+
     /// Nil for a tool with no live source (opencode).
     public static func fetch(_ account: Account, runner: Runner?) async -> Outcome? {
         switch account.tool {

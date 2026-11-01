@@ -110,6 +110,14 @@ func write(_ text: String, to path: String) {
         #expect(schedule.due(["a", "b"], at: t0 + 300) == ["a"])
         #expect(schedule.due(["a", "b"], at: t0 + 900) == ["a", "b"])
     }
+
+    @Test func aLaterReadingAnswersAFailedLiveRead() {
+        let failure = LiveUsage.Failure("Login expired; one message on this account refreshes it", at: t0)
+        #expect(failure.isAnswered(by: Usage(windows: [], recordedAt: t0 + 5)))
+        #expect(!failure.isAnswered(by: Usage(windows: [], recordedAt: t0)))
+        #expect(!failure.isAnswered(by: Usage(windows: [], recordedAt: t0 - 60)))
+        #expect(!failure.isAnswered(by: nil))
+    }
 }
 
 @Suite struct ClaudeStatusLine {
