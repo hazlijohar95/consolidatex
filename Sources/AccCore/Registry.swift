@@ -118,7 +118,7 @@ public struct Registry: Codable, Equatable, Sendable {
         accounts.first { $0.tool == tool && $0.configDir == nil } ?? accounts.first { $0.tool == tool }
     }
 
-    public func validate(home: String = userHome()) throws {
+    public func validate() throws {
         guard version == Registry.currentVersion else { throw AccError.unsupportedVersion(version) }
         var problems: [String] = []
         var seen = Set<String>()
@@ -136,11 +136,10 @@ public struct Registry: Codable, Equatable, Sendable {
             if accounts.filter({ $0.tool == tool && $0.configDir == nil }).count > 1 {
                 problems.append("more than one \(tool.spec.name) account uses the default folder (configDir: null)")
             }
-            // Compared as `account(for:)` finds them, so "~/.codex-x/" and "/Users/me/.codex-x" are one folder.
+            // As written: a registry naming one folder two ways still loads. `add` refuses a second spelling.
             let folders = accounts.filter { $0.tool == tool }.compactMap(\.configDir)
-            let keys = folders.map { canonical(Account.expandingHome($0, home: home)) }
-            for (i, key) in keys.enumerated() where keys.firstIndex(of: key) == i && keys.filter({ $0 == key }).count > 1 {
-                problems.append("more than one \(tool.spec.name) account uses \(folders[i])")
+            for folder in Set(folders) where folders.filter({ $0 == folder }).count > 1 {
+                problems.append("more than one \(tool.spec.name) account uses \(folder)")
             }
             let hasAccounts = accounts.contains { $0.tool == tool }
             if let id = current[tool] {
@@ -162,6 +161,7 @@ public struct Registry: Codable, Equatable, Sendable {
     /// shows it even when filtered to one tool), its id, or a fragment of its id, label or email
     /// that matches exactly one account (of `tool`, if given).
     public func resolve(_ ref: String, tool: Tool? = nil) throws -> Account {
+        guard !accounts.isEmpty else { throw AccError.usage("no accounts yet (run: acc setup)") }
         let q = ref.trimmingCharacters(in: .whitespaces).lowercased()
         if let n = Int(q) {
             guard ordered.indices.contains(n - 1), tool == nil || ordered[n - 1].tool == tool else { throw AccError.noMatch(ref) }

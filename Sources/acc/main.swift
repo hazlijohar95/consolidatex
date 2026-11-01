@@ -344,10 +344,16 @@ func setup(assumeYes: Bool) throws {
     if let shell = ShellInit.Shell.from(path: environment["SHELL"]) {
         let file = abbreviatingHome(shell.hook().file)
         if ask("\nAdd the \(shell.rawValue) hook to \(file), so `claude`, `codex` and `opencode` start on the account you pick?", assumeYes: assumeYes) {
-            switch try ShellInit.installHook(shell) {
-            case .alreadyInstalled: say("  already there")
-            case .installed: say("  added; open a new terminal to use it")
-            case .replacedLegacy: say("  replaced the older acc line; open a new terminal to use it")
+            // A startup file linked into a read-only place (nix home-manager) can't take the line;
+            // setup goes on, and the person adds it where their config is made.
+            do {
+                switch try ShellInit.installHook(shell) {
+                case .alreadyInstalled: say("  already there")
+                case .installed: say("  added; open a new terminal to use it")
+                case .replacedLegacy: say("  replaced the older acc line; open a new terminal to use it")
+                }
+            } catch {
+                say("  couldn't write \(file): \(error)\n  add this line to it yourself:\n    \(shell.hook().line)")
             }
         }
     } else {

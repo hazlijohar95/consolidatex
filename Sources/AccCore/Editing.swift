@@ -6,6 +6,10 @@ extension Registry {
     public mutating func add(_ account: Account) throws {
         guard Registry.isValidID(account.id), !Registry.reservedIDs.contains(account.id) else { throw AccError.invalidID(account.id) }
         guard self.account(id: account.id) == nil else { throw AccError.duplicateID(account.id) }
+        // Compared as `account(for:)` finds them, so "~/.codex-x/" and "/Users/me/.codex-x" are one folder.
+        if let dir = account.configDir, self.account(for: account.tool, configDir: account.resolvedConfigDir()) != nil {
+            throw AccError.usage("another \(account.tool.spec.name) account already uses \(dir)")
+        }
         var next = self
         next.accounts.append(account)
         next.removed.removeAll { $0.matches(account.tool, account.configDir) }

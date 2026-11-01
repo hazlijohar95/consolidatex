@@ -40,13 +40,24 @@ import Testing
         #expect(Account.configDir(typed: "/h2/x", cwd: "/w", home: "/h") == "/h2/x")
     }
 
-    @Test func oneFolderWrittenTwoWaysIsADuplicate() {
+    @Test func aFolderCantBeAddedAgainWrittenAnotherWay() {
         var r = sample
-        #expect(throws: AccError.invalidRegistry(["more than one Codex account uses /abs/side"])) {
+        #expect(throws: AccError.usage("another Codex account already uses /abs/side/")) {
             try r.add(Account(id: "dup", tool: .codex, label: "Dup", configDir: "/abs/side/"))
         }
-        r.accounts.append(Account(id: "abs", tool: .claude, label: "Abs", configDir: "/h/.claude-acc4"))
-        #expect(throws: AccError.invalidRegistry(["more than one Claude Code account uses ~/.claude-acc4"])) { try r.validate(home: "/h") }
+    }
+
+    @Test func aRegistryNamingOneFolderTwoWaysStillLoads() throws {
+        var r = sample
+        r.accounts.append(Account(id: "abs", tool: .codex, label: "Abs", configDir: "/abs/side/"))
+        try r.validate()
+    }
+
+    @Test func discoveryListsASymlinkedFolderOnce() throws {
+        let home = tempHome()
+        write("{}", to: home + "/.codex-real/auth.json")
+        try FileManager.default.createSymbolicLink(atPath: home + "/.codex-work", withDestinationPath: ".codex-real")
+        #expect(Discovery.find(home: home).filter { $0.tool == .codex }.map(\.configDir) == ["~/.codex-real"])
     }
 }
 
@@ -80,7 +91,8 @@ import Testing
 @Suite struct ShellHook {
     @Test func aliasesThatSkipAccAreFound() {
         let home = tempHome()
-        write("alias claude=\"$HOME/.claude/local/claude\"\nalias codex='codex --yolo'\nalias opencode='FOO=1 opencode'\nalias ll='ls -l'\n",
+        write("alias claude=\"$HOME/.claude/local/claude\"\nalias codex='codex --yolo'\nalias opencode='FOO=1 opencode'\nalias ll='ls -l'\n"
+              + "alias codex='nocorrect codex'\nalias opencode='noglob opencode run'\n",
               to: home + "/.zshrc")
         let found = ShellInit.bypassingAliases(.zsh, home: home)
         #expect(found.map(\.command) == ["claude"])

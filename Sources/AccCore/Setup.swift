@@ -68,7 +68,8 @@ public enum ShellInit {
                 guard text.hasPrefix("alias "), let eq = text.firstIndex(of: "=") else { return nil }
                 let name = text[text.index(text.startIndex, offsetBy: 6)..<eq].trimmingCharacters(in: .whitespaces)
                 let target = text[text.index(after: eq)...].trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
-                let command = target.split(separator: " ").first { !$0.contains("=") }
+                // zsh's nocorrect and noglob run the next word as the command, function included.
+                let command = target.split(separator: " ").first { !$0.contains("=") && $0 != "nocorrect" && $0 != "noglob" }
                 guard commands.contains(name), command.map(String.init) != name else { return nil }
                 return (file, name, target)
             }
@@ -143,7 +144,12 @@ public enum Discovery {
         }
         // Named for who is logged in, so "acc2" reads as "hazli"; two logins with one email get their plan added.
         var taken = Set(registry.accounts.map { $0.label.lowercased() })
-        return found.filter { !registry.knows($0.tool, configDir: $0.configDir, home: home) }.map { f in
+        // Two names for one folder (a symlinked ~/.codex-work) are one account.
+        var folders = Set<String>()
+        return found.filter { f in
+            folders.insert(canonical(Account(id: "", tool: f.tool, label: "", configDir: f.configDir).folder(home: home))).inserted
+                && !registry.knows(f.tool, configDir: f.configDir, home: home)
+        }.map { f in
             let identity = Identity.read(Account(id: "", tool: f.tool, label: "", configDir: f.configDir), home: home)
             let person = identity?.email?.split(separator: "@").first.map(String.init)
             let options = [f.named, person, person.flatMap { p in identity?.plan.map { "\(p) · \($0)" } }, f.folder]

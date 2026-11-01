@@ -15,7 +15,7 @@ needs_swiftui_macro_plugin() {
 
 if [[ $(xcode-select -p) == $clt && -z ${SDKROOT:-} && -z $(find $clt/usr/lib/swift -name 'libSwiftUIMacros*' -print -quit) ]] \
    && needs_swiftui_macro_plugin "$(xcrun --show-sdk-path)"; then
-  for sdk in $clt/SDKs/MacOSX<->.<->.sdk(nOn); do
+  for sdk in $clt/SDKs/MacOSX<->.<->.sdk(nOnN); do
     if ! needs_swiftui_macro_plugin $sdk; then
       export SDKROOT=$sdk
       print "Building against ${sdk:t}: the default SDK needs a SwiftUI macro plugin the Command Line Tools don't include."
