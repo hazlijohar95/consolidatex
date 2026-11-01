@@ -12,10 +12,10 @@ class Consolidatex < Formula
   # Built from source on purpose: an app compiled on the user's Mac is not quarantined,
   # so it opens without Gatekeeper prompts even though releases are not yet notarized.
   def install
-    args = ["--disable-sandbox", "-c", "release"]
-    system "swift", "build", *args, "--product", "acc"
-    system "swift", "build", *args, "--product", "Consolidatex"
-    products = Utils.safe_popen_read("swift", "build", *args, "--show-bin-path").chomp
+    args = "--disable-sandbox -c release"
+    # script/toolchain picks an SDK these Command Line Tools can build the app with.
+    system "zsh", "-c", "source script/toolchain && swift build #{args} --product acc && swift build #{args} --product Consolidatex"
+    products = Utils.safe_popen_read("swift", "build", *args.split, "--show-bin-path").chomp
     system "script/bundle", products, prefix/"Consolidatex.app", version.to_s
     bin.install_symlink prefix/"Consolidatex.app/Contents/MacOS/acc"
   end
