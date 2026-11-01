@@ -37,4 +37,11 @@ extension Registry {
         else { return nil }
         return picked
     }
+
+    /// What switching to the accounts with the most left picks (`acc auto`, the app's menu): for each
+    /// tool with any usage on record, or just `tool`, its account with the most headroom.
+    public func mostLeft(_ usage: [String: Usage], tool: Tool? = nil, at now: Date = Date()) -> [Account] {
+        tools.filter { t in (tool == nil || t == tool) && accounts(for: t).contains { usage[$0.id] != nil } }
+            .compactMap { byHeadroom($0, usage, at: now).first }
+    }
 }

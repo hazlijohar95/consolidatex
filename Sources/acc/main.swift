@@ -417,13 +417,11 @@ func main() throws {
     case "auto":
         let registry = try store.load()
         let usage = usages.all(registry)
-        let tools = args.first.flatMap(tool(named:)).map { [$0] } ?? registry.tools.filter { t in registry.accounts(for: t).contains { usage[$0.id] != nil } }
-        guard !tools.isEmpty else { throw AccError.usage("no usage recorded yet; use your accounts for a while first") }
-        for t in tools {
-            if let best = registry.byHeadroom(t, usage).first {
-                try switchTo(best.id)
-                say("  \(UsageFormat.summary(usage[best.id], tool: t))")
-            }
+        let picks = registry.mostLeft(usage, tool: args.first.flatMap(tool(named:)))
+        guard !picks.isEmpty else { throw AccError.usage("no usage recorded yet; use your accounts for a while first") }
+        for best in picks {
+            try switchTo(best.id)
+            say("  \(UsageFormat.summary(usage[best.id], tool: best.tool))")
         }
 
     case "report":

@@ -116,6 +116,15 @@ import Testing
     }
 }
 
+@Suite struct MostLeft {
+    @Test func picksTheRoomiestOfEachToolWithUsageOnRecord() {
+        let readings = ["personal": usage(30), "cto": usage(80)]
+        #expect(sample.mostLeft(readings, at: t0).map(\.id) == ["personal"])
+        #expect(sample.mostLeft(readings, tool: .codex, at: t0).isEmpty)
+        #expect(sample.mostLeft(readings.merging(["side": usage(10)]) { $1 }, at: t0).map(\.id) == ["personal", "side"])
+    }
+}
+
 @Suite struct Adding {
     @Test func addNewNamesAndPlacesTheAccount() throws {
         var r = sample
