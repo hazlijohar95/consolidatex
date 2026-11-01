@@ -68,12 +68,10 @@ final class Model: ObservableObject {
         hotKey = HotKey(keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(cmdKey | optionKey)) { [weak self] in self?.showQuickSwitcher() }
         LoginShell.adopt(LoginShell.usualPlaces)
         locateTools()
-        Task.detached {
-            guard let path = LoginShell.path() else { return }
-            await MainActor.run {
-                LoginShell.adopt(path)
-                self.locateTools()
-            }
+        Task {
+            guard let path = await LiveUsage.offPool({ LoginShell.path() }) else { return }
+            LoginShell.adopt(path)
+            self.locateTools()
         }
         reload()
         watch()
@@ -286,29 +284,27 @@ final class Model: ObservableObject {
         }
         lastError = nil
         guard let account = edit({ try $0.addNew(tool, label: label, id: id) }), let registry else { return }
-        Task.detached {
+        Task {
             do {
-                _ = try Shared.setUp(account, in: registry, runner: runner)
-                await MainActor.run { self.logIn(account) }
+                _ = try await LiveUsage.offPool { Result { try Shared.setUp(account, in: registry, runner: runner) } }.get()
+                self.logIn(account)
             } catch {
-                await MainActor.run { self.lastError = String(describing: error) }
+                self.lastError = String(describing: error)
             }
         }
     }
 
-    // MARK: Health, sync and login run the tools, so they stay off the main thread.
+    // MARK: Health, sync and login wait on the tools, so the waiting happens on a dispatch thread.
 
     func checkHealth() {
         guard let registry, !checking else { return }
         checking = true
         let runners = self.runners
-        Task.detached {
-            let results = AccountHealth.checkAll(registry, runners: runners)
-            await MainActor.run {
-                self.health = results
-                self.checking = false
-                self.recordEmails(results)
-            }
+        Task {
+            let results = await LiveUsage.offPool { AccountHealth.checkAll(registry, runners: runners) }
+            self.health = results
+            self.checking = false
+            self.recordEmails(results)
         }
     }
 
@@ -322,10 +318,10 @@ final class Model: ObservableObject {
         guard let registry else { return }
         checking = true
         let runners = self.runners
-        Task.detached {
+        Task {
             var lines: [String] = []
             var failure: String?
-            for (account, _, result) in Shared.syncAll(registry, runners: runners, prune: false) {
+            for (account, _, result) in await LiveUsage.offPool({ Shared.syncAll(registry, runners: runners, prune: false) }) {
                 do {
                     let changes = try result.get()
                     if !changes.isEmpty { lines.append("\(account.label): \(changes.joined(separator: ", "))") }
@@ -333,13 +329,10 @@ final class Model: ObservableObject {
                     failure = "\(account.label): \(error)"
                 }
             }
-            let report = lines.isEmpty ? "Every account already shares its primary's config." : lines.joined(separator: "\n")
-            await MainActor.run {
-                self.checking = false
-                self.syncReport = report
-                self.lastError = failure
-                self.checkHealth()
-            }
+            self.checking = false
+            self.syncReport = lines.isEmpty ? "Every account already shares its primary's config." : lines.joined(separator: "\n")
+            self.lastError = failure
+            self.checkHealth()
         }
     }
 
@@ -357,15 +350,12 @@ final class Model: ObservableObject {
             return
         }
         logins[account.id] = .waiting
-        Task.detached {
-            let result = Self.runLogin(account, runner: runner)
-            await MainActor.run {
-                switch result {
-                case .success: self.logins[account.id] = nil
-                case .failure(let message): self.logins[account.id] = .failed(message)
-                }
-                self.checkHealth()
+        Task {
+            switch await LiveUsage.offPool({ Self.runLogin(account, runner: runner) }) {
+            case .success: self.logins[account.id] = nil
+            case .failure(let message): self.logins[account.id] = .failed(message)
             }
+            self.checkHealth()
         }
     }
 
