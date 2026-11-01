@@ -61,19 +61,18 @@ public struct Runner: Sendable {
     /// Replaces this process with the tool running on `account`, or untouched when `account` is nil.
     /// Returns only on failure.
     public func exec(account: Account?, arguments: [String]) -> AccError {
-        var args = arguments
+        var args = arguments, env = ProcessInfo.processInfo.environment
         if let account {
-            if let dir = account.resolvedConfigDir() {
-                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-                setenv(spec.variable, dir, 1)
-            } else {
-                unsetenv(spec.variable)
-            }
+            // A folder that can't be made is the tool's to report; launching never stops here.
+            try? prepare(account)
+            env = environment(for: account, base: env)
             args = self.arguments(for: account, arguments)
         }
         var argv: [UnsafeMutablePointer<CChar>?] = ([executable] + args).map { strdup($0) }
         argv.append(nil)
-        execv(executable, argv)
+        var envp: [UnsafeMutablePointer<CChar>?] = env.map { strdup("\($0)=\($1)") }
+        envp.append(nil)
+        execve(executable, argv, envp)
         return .system("could not start \(executable): \(String(cString: strerror(errno)))")
     }
 

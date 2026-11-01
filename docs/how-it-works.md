@@ -57,7 +57,7 @@ A rule that both the CLI and the app need belongs in AccCore. If a view starts d
 2. If the tool's variable is already set, for example inherited from a parent session, leave it alone.
 3. Otherwise use the tool's current account.
 
-`Runner.exec` then sets or unsets the variable and replaces the `acc` process with the real binary through `execv`. The tool ends up as a direct child of the shell, with no wrapper left running. If the registry is missing, the tool starts on its default account. If the registry is broken, `launch` prints the error, then starts the tool on its default account anyway. A broken `accounts.json` never stops `claude` from starting.
+`Runner.exec` then replaces the `acc` process with the real binary through `execve`, with the variable set or unset by `Runner.environment(for:)`, the same code `acc run`, logins and status checks use. The tool ends up as a direct child of the shell, with no wrapper left running. If the registry is missing, the tool starts on its default account. If the registry is broken, `launch` prints the error, then starts the tool on its default account anyway. A broken `accounts.json` never stops `claude` from starting.
 
 Picking an account only writes `current`. Nothing reaches running sessions, because their variable was fixed when they started.
 
