@@ -92,6 +92,15 @@ public enum Shared {
         }
         return changes
     }
+
+    /// Readies an account `Registry.addNew` just listed in `registry`, before its login: creates its
+    /// folder and shares its tool's primary config with it. Returns what it shared. MCP servers are
+    /// added through the tool, so keep this off the main thread.
+    public static func setUp(_ account: Account, in registry: Registry, runner: Runner, home: String = userHome()) throws -> [String] {
+        try runner.prepare(account)
+        guard let primary = registry.primary(for: account.tool), primary.id != account.id else { return [] }
+        return try sync(account, primary: primary, runner: runner, prune: false, home: home)
+    }
 }
 
 /// How one account stands: logged in, and sharing its tool's primary config.

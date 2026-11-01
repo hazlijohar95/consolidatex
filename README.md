@@ -117,6 +117,7 @@ All state lives in `~/.config/acc/accounts.json`. Every change is checked before
 ## If something's off
 
 - **`claude` ignores the account you picked.** Open a new terminal. If it still does, run `acc doctor`. It reports a missing shell line.
+- **`acc add` stopped at the login.** The account is already in the list. Run `acc login <name>` to log it in.
 - **An account shows "no usage yet".** Claude Code: use it once, or turn on live Claude usage. Codex: start a session on it.
 - **The panel shows a red message under an account.** That's the last error from asking for its usage, such as an expired login. Run `acc login <name>`.
 - **The app says a tool isn't installed.** The app looks for tools on your login shell's `PATH`. Check that `which claude` works in a new terminal.

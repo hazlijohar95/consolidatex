@@ -33,10 +33,17 @@ PY
 fi
 echo "CFG=${CLAUDE_CONFIG_DIR-<unset>} ARGS=$*"
 EOF
-# codex: `login status` exits 0 unless the home has LOGGED_OUT.
+# codex: `login status` exits 0 unless the home has LOGGED_OUT; `login` runs $ON_LOGIN (another
+# acc acting meanwhile, like the app), then fails with $FAIL_LOGIN or logs the home in.
 cat > $T/bin/codex <<'EOF'
 #!/bin/sh
-if [ "$1 $2" = "login status" ]; then [ -e "${CODEX_HOME:-$HOME/.codex}/LOGGED_OUT" ] && exit 1; exit 0; fi
+home="${CODEX_HOME:-$HOME/.codex}"
+if [ "$1 $2" = "login status" ]; then [ -e "$home/LOGGED_OUT" ] && exit 1; exit 0; fi
+if [ "$1" = login ]; then
+  [ -n "$ON_LOGIN" ] && sh -c "$ON_LOGIN"
+  [ -n "$FAIL_LOGIN" ] && exit 1
+  rm -f "$home/LOGGED_OUT"; exit 0
+fi
 echo "CODEX=${CODEX_HOME-<unset>} ARGS=$*"
 EOF
 # opencode: `auth list --format json` reports one connected provider.
@@ -114,6 +121,15 @@ acc add codex 'Client A' >/dev/null
 check 'add links shared codex config'     "$(readlink $H/.codex-client-a/config.toml)" "$H/.codex/config.toml"
 check 'add refuses a duplicate'           "$(acc add codex x --id side 2>&1)" "acc: an account with id 'side' already exists"
 check 'add refuses an unknown tool'       "$(acc add kiro 2>&1 | head -1)" 'acc: usage: acc add <claude|codex|opencode> [<name>] [--id <id>] [--dir <folder>]'
+
+# --- adding with a login: listed first, so nothing done during the login is lost
+mkdir -p $H/.codex-race $H/.codex-flaky; touch $H/.codex-race/LOGGED_OUT $H/.codex-flaky/LOGGED_OUT
+ON_LOGIN='acc use side >/dev/null' acc add codex Race >/dev/null
+check 'add keeps a switch made during login' "$(current codex)" side
+check 'add logs the new account in'       "$([[ -e $H/.codex-race/LOGGED_OUT ]] || echo yes)" yes
+check 'failed login keeps the account'    "$(FAIL_LOGIN=1 acc add codex Flaky 2>&1 >/dev/null; echo "exit $?")" $'acc: codex failed: login exited 1\nacc: added \'flaky\', but it isn\'t logged in; try again with: acc login flaky\nexit 1'
+check 'it stays listed for the retry'     "$(acc ls codex | grep -c ' flaky ')" 1
+check 'acc login retries it'              "$(acc login flaky | tail -1)" 'logged in flaky'
 
 # --- usage, status line, auto
 in_status() { print -r -- "{\"model\":{\"display_name\":\"Opus\"},\"rate_limits\":{\"five_hour\":{\"used_percentage\":$1,\"resets_at\":$(( $(date +%s) + 7200 ))}}}" }

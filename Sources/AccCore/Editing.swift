@@ -84,4 +84,16 @@ extension Registry {
         let id = id ?? suggestedID(for: label)
         return Account(id: id, tool: tool, label: label, configDir: "~/" + tool.spec.newAccountPrefix + id)
     }
+
+    /// The first step of adding an account, before `Shared.setUp` and its login: listing it first
+    /// means discovery knows its folder while the login fills it, and a failed login leaves an
+    /// account to log in again rather than a stray folder. Labelled "<Tool> <n>" unless `label`
+    /// is given, in its own folder unless `configDir` names one.
+    @discardableResult
+    public mutating func addNew(_ tool: Tool, label: String? = nil, id: String? = nil, configDir: String? = nil) throws -> Account {
+        var account = newAccount(tool: tool, label: label ?? "\(tool.spec.name) \(accounts(for: tool).count + 1)", id: id)
+        if let configDir { account.configDir = configDir }
+        try add(account)
+        return account
+    }
 }

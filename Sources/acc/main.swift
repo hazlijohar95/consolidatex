@@ -326,11 +326,13 @@ func setup(assumeYes: Bool) throws {
         say("\nFound \(candidates.count) account\(candidates.count == 1 ? "" : "s"):")
         candidates.forEach { say("  \(pad($0.tool.spec.name, 12)) \(pad($0.label, 24)) \($0.configDir ?? "default folder")") }
         if ask("Import them?", assumeYes: assumeYes) {
-            for c in candidates {
-                let account = try registry.adopt(c)
-                say("  + \(account.id)  \(account.label)\(account.email.map { "  (\($0))" } ?? "")")
+            // Found again from the file: the app may have listed some while the question waited.
+            let imported = try store.update { r in
+                let adopted = try Discovery.find(excluding: r).filter { installed.contains($0.tool) }.map { try r.adopt($0) }
+                return (registry: r, adopted: adopted)
             }
-            try store.save(registry)
+            registry = imported.registry
+            imported.adopted.forEach { say("  + \($0.id)  \($0.label)\($0.email.map { "  (\($0))" } ?? "")") }
         }
     }
 
@@ -449,21 +451,26 @@ func main() throws {
             throw AccError.usage("usage: acc add <claude|codex|opencode> [<name>] [--id <id>] [--dir <folder>]")
         }
         args.removeFirst()
-        var registry = try store.loadOrEmpty()
-        let label = args.isEmpty ? "\(t.spec.name) \(registry.accounts(for: t).count + 1)" : args.joined(separator: " ")
-        var account = registry.newAccount(tool: t, label: label, id: id)
-        if let dir { account.configDir = dir }
-        var next = registry
-        try next.add(account)
+        let label = args.isEmpty ? nil : args.joined(separator: " ")
         let runner = try Runner.locate(t)
-        try runner.prepare(account)
-        if let primary = registry.primary(for: t) {
-            for change in try Shared.sync(account, primary: primary, runner: runner, prune: false) { say("  \(change)") }
+        let (account, registry) = try store.update { r in (try r.addNew(t, label: label, id: id, configDir: dir), r) }
+        do {
+            for change in try Shared.setUp(account, in: registry, runner: runner) { say("  \(change)") }
+        } catch {
+            warn("\(error)")
+            throw AccError.system("added '\(account.id)', but couldn't share its config; finish with: acc sync, then acc login \(account.id)")
         }
-        account.email = try ensureLoggedIn(account, runner: runner).email
-        try registry.add(account)
-        try store.save(registry)
-        say("added \(describe(account))")
+        let status: Runner.AuthStatus
+        do {
+            status = try ensureLoggedIn(account, runner: runner)
+        } catch {
+            warn("\(error)")
+            throw AccError.system("added '\(account.id)', but it isn't logged in; try again with: acc login \(account.id)")
+        }
+        try store.update { $0.recordEmail(status.email, for: account.id) }
+        var added = account
+        added.email = status.email
+        say("added \(describe(added))")
 
     case "login":
         guard let ref = args.first else { throw AccError.usage("usage: acc login <account>") }
