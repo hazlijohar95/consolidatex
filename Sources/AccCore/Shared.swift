@@ -102,8 +102,6 @@ public struct AccountHealth: Equatable, Sendable {
     public var problems: [String]
     public var issues: [String]
 
-    public var isHealthy: Bool { loggedIn == true && problems.isEmpty }
-
     public static func check(_ account: Account, in registry: Registry, runner: Runner?) -> AccountHealth {
         var health = AccountHealth(loggedIn: nil, email: nil, detail: nil, problems: [], issues: [])
         if let dir = account.resolvedConfigDir(), !FileManager.default.fileExists(atPath: dir) {

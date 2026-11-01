@@ -58,7 +58,7 @@ print '{}' > $H/.codex-side/auth.json
 print '{"providerInstances":{"a":{"driver":"claudeAgent","displayName":"Haz (team)","enabled":true}}}' > $H/.t3/userdata/settings.json
 
 export ACC_HOME=$T/acc HOME=$H SHELL=/bin/zsh PATH=$T/bin:/usr/bin:/bin
-unset CLAUDE_CONFIG_DIR CODEX_HOME XDG_DATA_HOME ACC_CLAUDE ACC_CODEX ACC_OPENCODE
+unset CLAUDE_CONFIG_DIR CODEX_HOME XDG_DATA_HOME
 
 fail=0
 check() {

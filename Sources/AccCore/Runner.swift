@@ -24,11 +24,8 @@ public struct Runner: Sendable {
         self.executable = executable
     }
 
-    /// $ACC_<TOOL> (for tests), else the first `<command>` on PATH.
+    /// The first `<command>` on PATH.
     public static func locate(_ tool: Tool, environment: [String: String] = ProcessInfo.processInfo.environment) throws -> Runner {
-        if let override = environment["ACC_\(tool.rawValue.uppercased())"], !override.isEmpty {
-            return Runner(tool: tool, executable: override)
-        }
         guard let executable = which(tool.spec.command, environment: environment) else { throw AccError.toolNotFound(tool.spec.command) }
         return Runner(tool: tool, executable: executable)
     }

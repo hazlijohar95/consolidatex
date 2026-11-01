@@ -17,8 +17,6 @@ public struct RegistryStore: Sendable {
         return RegistryStore(directory: URL(fileURLWithPath: userHome()).appendingPathComponent(".config/acc", isDirectory: true))
     }
 
-    public var exists: Bool { FileManager.default.fileExists(atPath: file.path) }
-
     public func load() throws -> Registry {
         let data: Data
         do {

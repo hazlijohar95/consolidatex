@@ -83,14 +83,13 @@ public enum Discovery {
         public let label: String
         /// nil = the tool's default folder.
         public let configDir: String?
-        public let source: String
     }
 
     public static func find(home: String = userHome(), excluding registry: Registry = .empty) -> [Candidate] {
         let fm = FileManager.default
         let t3 = t3ClaudeLabels(home: home)
         /// `named` is the T3 Code name, if any; `folder` the fallback.
-        var found: [(tool: Tool, configDir: String?, source: String, named: String?, folder: String)] = []
+        var found: [(tool: Tool, configDir: String?, named: String?, folder: String)] = []
         let names = ((try? fm.contentsOfDirectory(atPath: home)) ?? []).sorted()
 
         for tool in Tool.allCases {
@@ -101,7 +100,7 @@ public enum Discovery {
             case .opencode: home + "/.local/share/opencode"
             }
             if fm.fileExists(atPath: marker) {
-                found.append((tool, nil, "default folder", tool == .claude ? t3[""] : nil, "\(spec.name) (default)"))
+                found.append((tool, nil, tool == .claude ? t3[""] : nil, "\(spec.name) (default)"))
             }
             // Sibling folders such as ~/.claude-work or ~/.codex-personal.
             let prefix = String(spec.newAccountPrefix.dropFirst())  // without the leading "."
@@ -109,7 +108,7 @@ public enum Discovery {
                 let dir = home + "/" + name
                 guard isAccountFolder(dir, tool: tool) else { continue }
                 let named = tool == .claude ? t3[canonical(dir)] : nil
-                found.append((tool, "~/" + name, named == nil ? "~/" + name : "T3 Code", named, String(name.dropFirst(prefix.count + 1))))
+                found.append((tool, "~/" + name, named, String(name.dropFirst(prefix.count + 1))))
             }
         }
         // Named for who is logged in, so "acc2" reads as "hazli"; two logins with one email get their plan added.
@@ -120,7 +119,7 @@ public enum Discovery {
             let options = [f.named, person, person.flatMap { p in identity?.plan.map { "\(p) · \($0)" } }, f.folder]
             let label = options.compactMap { $0 }.first { !taken.contains($0.lowercased()) } ?? f.folder
             taken.insert(label.lowercased())
-            return Candidate(tool: f.tool, label: label, configDir: f.configDir, source: f.source)
+            return Candidate(tool: f.tool, label: label, configDir: f.configDir)
         }
     }
 
