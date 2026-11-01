@@ -53,6 +53,8 @@ claude @work
 
 To switch from anywhere, press **⌥⌘A**. Use the arrow keys to choose an account, then press Return.
 
+To open the usage panel from anywhere, press **⇧⌥⌘A**.
+
 ## When an account hits its limit
 
 When the account new sessions start on hits a limit, Consolidatex moves new sessions to the account with the most tokens left and tells you. When the first account resets, it moves them back. Picking an account yourself ends the move. To turn this off, open the panel's **⋯** menu and clear **Switch Automatically at a Limit**.

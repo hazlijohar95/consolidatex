@@ -51,8 +51,9 @@ final class Model: ObservableObject {
     private var watcher: DispatchSourceFileSystemObject?
     private var forwarding: AnyCancellable?
     private var discovery: Timer?
-    private var hotKey: HotKey?
-    private lazy var quickSwitcher = QuickSwitcher(model: self)
+    private var hotKeys: [HotKey] = []
+    private let switcher = FloatingPanel()
+    private let panel = FloatingPanel()
     /// The automatic moves still open, per tool, so each can be undone when its account resets.
     private var detours: [Tool: Detour] = (UserDefaults.standard.data(forKey: "detours")
         .flatMap { try? JSONDecoder().decode([Tool: Detour].self, from: $0) }) ?? [:] {
@@ -65,7 +66,10 @@ final class Model: ObservableObject {
         Notices.prepare()
         Notices.onContinue = { [weak self] target, conversation in self?.continueConversation(conversation, on: target) }
         monitor.onRefresh = { [weak self] changes, now in self?.follow(changes, at: now) }
-        hotKey = HotKey(keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(cmdKey | optionKey)) { [weak self] in self?.showQuickSwitcher() }
+        hotKeys = [
+            HotKey(keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(cmdKey | optionKey)) { [weak self] in self?.showQuickSwitcher() },
+            HotKey(keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(cmdKey | optionKey | shiftKey)) { [weak self] in self?.showPanel() },
+        ].compactMap { $0 }
         LoginShell.adopt(LoginShell.usualPlaces)
         locateTools()
         Task {
@@ -159,7 +163,13 @@ final class Model: ObservableObject {
         offerTerminal = !terminalFollows && !UserDefaults.standard.bool(forKey: "terminalOfferDeclined")
     }
 
-    func showQuickSwitcher() { quickSwitcher.toggle() }
+    func showQuickSwitcher() { switcher.toggle { QuickSwitchView(model: self, close: $0) } }
+
+    /// The menu bar panel, for ⇧⌥⌘A. SwiftUI can't open a menu bar extra from code, so it opens in the
+    /// middle of the screen instead.
+    func showPanel() {
+        panel.toggle { _ in UsagePanel(model: self).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) }
+    }
 
     // MARK: Following usage
 

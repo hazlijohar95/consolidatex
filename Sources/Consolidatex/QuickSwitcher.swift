@@ -1,54 +1,8 @@
 import AccCore
-import AppKit
 import SwiftUI
 
 /// The ⌥⌘A window: the accounts of every tool with a choice, arrow keys to move, Return to switch.
-@MainActor
-final class QuickSwitcher {
-    private weak var model: Model?
-    private var panel: NSPanel?
-    private var resign: NSObjectProtocol?
-
-    init(model: Model) { self.model = model }
-
-    func toggle() {
-        if panel?.isVisible == true { close() } else { show() }
-    }
-
-    private func show() {
-        guard let model else { return }
-        let panel = KeyPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.level = .floating
-        let host = NSHostingView(rootView: QuickSwitchView(model: model) { [weak self] in self?.close() })
-        panel.contentView = host
-        panel.setContentSize(host.fittingSize)
-        panel.center()
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
-        // Clicking anywhere else closes it, as Spotlight does.
-        resign = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.close() }
-        }
-        self.panel = panel
-    }
-
-    private func close() {
-        resign.map(NotificationCenter.default.removeObserver)
-        resign = nil
-        panel?.orderOut(nil)
-        panel = nil
-    }
-
-    /// A borderless window can't take keyboard focus unless it says so.
-    private final class KeyPanel: NSPanel {
-        override var canBecomeKey: Bool { true }
-    }
-}
-
-private struct QuickSwitchView: View {
+struct QuickSwitchView: View {
     @ObservedObject var model: Model
     let close: () -> Void
     @State private var selection: String?
