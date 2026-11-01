@@ -75,6 +75,11 @@ plain() { sed $'s/\e\\[[0-9;]*m//g' }
 current() { acc ls $1 | grep '^●' | awk '{print $4}' }
 col() { sed 's/^●/ /' | awk "{print $1}" }
 sh() { zsh -fc 'eval "$(acc shell-init zsh)"; '"$1" 2>&1 }
+# The same in zsh then bash, under a `claude` alias defined before the hook, as rc files often have.
+aliased() {
+  zsh -fc 'alias claude="claude --x"; eval "$(acc shell-init zsh)"; eval "$1"' zsh "$1" 2>&1
+  bash --norc --noprofile -c 'shopt -s expand_aliases; alias claude="claude --x"; eval "$(acc shell-init bash)"; eval "$1"' bash "$1" 2>&1
+}
 
 # --- first run
 check 'nothing yet'                       "$(acc ls 2>&1)" 'acc: no accounts yet (run: acc setup)'
@@ -98,6 +103,8 @@ check 'codex keeps its own current'       "$(sh 'codex exec hi')" 'CODEX=<unset>
 acc codex side >/dev/null
 check 'switch within a tool'              "$(sh 'codex')" "CODEX=$H/.codex-side ARGS="
 check 'switching codex left claude alone' "$(current claude)" cto
+check 'an alias does not break the hook'  "$(aliased $'codex\nclaude q')" "$(repeat 2 print -r -- "CODEX=$H/.codex-side ARGS=
+CFG=$H/.claude-cto ARGS=--x q")"
 acc 3 >/dev/null
 check 'switch by position'                "$(current codex)" codex-default
 check '@ one-off'                         "$(sh 'codex @side x')" "CODEX=$H/.codex-side ARGS=x"
@@ -163,6 +170,9 @@ check 'doctor only flags the extra MCP'   "$(acc doctor | grep '^[✗!]')" '! ct
 touch $H/.claude-cto/LOGGED_OUT
 check 'doctor flags a logged-out account' "$(acc doctor | grep '^✗'; echo "exit ${pipestatus[1]}")" $'✗ cto               not logged in → acc login cto\nexit 1'
 rm $H/.claude-cto/LOGGED_OUT
+cp $H/.zshrc $T/zshrc; print 'alias claude=~/.claude/local/claude' >> $H/.zshrc
+check 'doctor names an alias that skips acc' "$(acc doctor | grep '^! shell')" '! shell     ~/.zshrc aliases claude to ~/.claude/local/claude, which skips acc → remove the alias and put that folder on PATH'
+mv $T/zshrc $H/.zshrc
 check 'sync keeps extra MCP servers'      "$(acc sync | grep mine | cut -c1-34)" '! cto: has MCP servers haz-team la'
 check 'sync --prune removes them'         "$(acc sync --prune | grep '^cto')" 'cto: MCP mine removed'
 check 'sync is idempotent'                "$(acc sync)" 'everything already shares its primary'"'"'s config'

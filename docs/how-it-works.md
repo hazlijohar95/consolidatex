@@ -49,7 +49,7 @@ A rule that both the CLI and the app need belongs in AccCore. If a view starts d
 
 ## Starting a session on an account
 
-`acc setup` adds one line to the shell's startup file, for example `eval "$(acc shell-init zsh)"`. That line defines `claude`, `codex` and `opencode` as shell functions, each of which runs `acc launch <tool> -- "$@"`.
+`acc setup` adds one line to the shell's startup file, for example `eval "$(acc shell-init zsh)"`. That line defines `claude`, `codex` and `opencode` as shell functions, each of which runs `acc launch <tool> -- "$@"`. It runs at every shell start, so a new `acc` changes the functions without touching the startup file. They are written `function claude { … }`, because `claude() { … }` under an alias named `claude` is an error in zsh and bash that stops the whole hook. An alias still wins when typed. One that starts with the command, such as `alias claude='claude --flag'`, reaches the function. One that points elsewhere skips acc, and `acc doctor` reports one in the startup file.
 
 `launch` in `main.swift` picks the account in this order:
 

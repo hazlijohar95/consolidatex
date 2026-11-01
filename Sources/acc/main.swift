@@ -175,6 +175,9 @@ func doctor(fix: Bool) throws -> Bool {
         if !ShellInit.isInstalled(shell) {
             say("! shell     \(shell.rawValue) hook not installed, so `claude`/`codex`/`opencode` ignore acc → acc setup")
         }
+        for alias in ShellInit.bypassingAliases(shell) {
+            say("! shell     \(abbreviatingHome(alias.file)) aliases \(alias.command) to \(alias.target), which skips acc → remove the alias and put that folder on PATH")
+        }
     }
     if case .outdated(let installed, let old, _) = appStatus() {
         say("! app       \(abbreviatingHome(installed)) is \(old ?? "older"), acc is \(version) → acc setup")

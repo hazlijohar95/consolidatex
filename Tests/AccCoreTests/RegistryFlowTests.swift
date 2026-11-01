@@ -77,6 +77,17 @@ import Testing
     }
 }
 
+@Suite struct ShellHook {
+    @Test func aliasesThatSkipAccAreFound() {
+        let home = tempHome()
+        write("alias claude=\"$HOME/.claude/local/claude\"\nalias codex='codex --yolo'\nalias opencode='FOO=1 opencode'\nalias ll='ls -l'\n",
+              to: home + "/.zshrc")
+        let found = ShellInit.bypassingAliases(.zsh, home: home)
+        #expect(found.map(\.command) == ["claude"])
+        #expect(found.first?.target == "$HOME/.claude/local/claude")
+    }
+}
+
 @Suite struct Adding {
     @Test func addNewNamesAndPlacesTheAccount() throws {
         var r = sample
