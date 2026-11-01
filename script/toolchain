@@ -1,0 +1,26 @@
+# Sourced by script/install and script/test; sets SDKROOT when the default SDK can't build the app.
+#
+# Command Line Tools 27.2 ship a macOS SDK whose SwiftUI declares macros such as @State that are
+# implemented by a SwiftUIMacros plugin the Command Line Tools don't include, so the app can't
+# build against it. Without Xcode, build against the newest installed SDK that doesn't need the
+# plugin. Xcode ships the plugin and is left alone.
+
+clt=/Library/Developer/CommandLineTools
+
+# Older SDKs declare a few SwiftUIMacros macros too, but nothing the app uses until @State became one.
+needs_swiftui_macro_plugin() {
+  local interfaces=($1/System/Library/Frameworks/SwiftUICore.framework/Modules/SwiftUICore.swiftmodule/*-apple-macos.swiftinterface(N))
+  (( $#interfaces )) && grep -qs 'module: "SwiftUIMacros", type: "StateMacro"' $interfaces
+}
+
+if [[ $(xcode-select -p) == $clt && -z ${SDKROOT:-} && -z $(find $clt/usr/lib/swift -name 'libSwiftUIMacros*' -print -quit) ]] \
+   && needs_swiftui_macro_plugin "$(xcrun --show-sdk-path)"; then
+  for sdk in $clt/SDKs/MacOSX<->.<->.sdk(nOn); do
+    if ! needs_swiftui_macro_plugin $sdk; then
+      export SDKROOT=$sdk
+      print "Building against ${sdk:t}: the default SDK needs a SwiftUI macro plugin the Command Line Tools don't include."
+      break
+    fi
+  done
+  [[ -n ${SDKROOT:-} ]] || print "No installed SDK builds the app with these Command Line Tools; install Xcode or an older Command Line Tools."
+fi

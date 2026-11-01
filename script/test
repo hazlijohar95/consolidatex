@@ -3,14 +3,18 @@
 set -eu -o pipefail
 cd ${0:A:h:h}
 
-# Command Line Tools ship swift-testing outside the default search path; Xcode does not need this.
-clt=/Library/Developer/CommandLineTools/Library/Developer
-testing_flags=()
-if [[ $(xcode-select -p) == /Library/Developer/CommandLineTools && -d $clt/Frameworks/Testing.framework ]]; then
-  testing_flags=(-Xswiftc -F$clt/Frameworks -Xlinker -F$clt/Frameworks
-    -Xlinker -rpath -Xlinker $clt/Frameworks -Xlinker -rpath -Xlinker $clt/usr/lib)
+source script/toolchain
+
+# Command Line Tools ship swift-testing outside the default search path, and SwiftPM's newer build
+# system doesn't find their testing macros, so they build with the native one. Xcode needs neither.
+dev=$clt/Library/Developer
+build_flags=() testing_flags=()
+if [[ $(xcode-select -p) == $clt && -d $dev/Frameworks/Testing.framework ]]; then
+  build_flags=(--build-system native)
+  testing_flags=(-Xswiftc -F$dev/Frameworks -Xlinker -F$dev/Frameworks
+    -Xlinker -rpath -Xlinker $dev/Frameworks -Xlinker -rpath -Xlinker $dev/usr/lib)
 fi
 
-swift build
-swift test $testing_flags 2>&1 | grep -E 'passed|failed|error' | tail -3
-ACC_BIN=$PWD/.build/debug/acc zsh Tests/e2e.sh
+swift build $build_flags
+swift test $build_flags $testing_flags 2>&1 | grep -E 'passed|failed|error' | tail -3
+ACC_BIN=$(swift build $build_flags --show-bin-path)/acc zsh Tests/e2e.sh

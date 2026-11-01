@@ -7,6 +7,7 @@ cd ${0:A:h:h}
 bin_dir=${ACC_BIN_DIR:-$HOME/.local/bin}
 app="${ACC_APP_DIR:-$HOME/Applications}/Consolidatex.app"
 
+source script/toolchain
 swift build -c release --product acc
 swift build -c release --product Consolidatex
 release=$(swift build -c release --show-bin-path)
