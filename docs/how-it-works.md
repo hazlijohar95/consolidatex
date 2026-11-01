@@ -155,6 +155,8 @@ In the panel, clicking an account asks for confirmation before switching, becaus
 
 `acc continue` finds the newest Claude Code or Codex conversation started in the current folder, in any account. It copies the conversation to the target account, then resumes it there. A Claude Code conversation is a transcript in `projects/<folder slug>/` plus a folder of subagent transcripts beside it. A Codex conversation is one rollout file under `sessions/YYYY/MM/DD/`. opencode keeps conversations in a database, so they can't move.
 
+What the copy holds is the first account's work, and the readers of usage take every line in an account's folder as that account's. So `copyReplacing` stores each copied file's length in an extended attribute, `io.cynco.consolidatex.copied-bytes`, and `TranscriptLog` and the Codex `token_count` reader start after it (`CopiedBytes`). Without it, a capped Codex account's last reading would cap the target, and a Claude Code account would count the first account's replies of the last 5 hours as its own. Finding and resuming the conversation still read the whole file. A copy that is copied on gets a new mark at its new length, so it never keeps the one it came with.
+
 ## Tests
 
 `script/test` runs the unit tests in `Tests/AccCoreTests`, then `Tests/e2e.sh`. The end-to-end script builds a throwaway `HOME` with stub `claude`, `codex` and `opencode` scripts. It then drives the real `acc` binary and the shell functions it generates through setup, switching, `@account`, usage, `continue`, `doctor`, `sync`, rename and removal. The unit tests use the same kind of stub for `codex app-server`. They also include a reply copied from a real Codex.

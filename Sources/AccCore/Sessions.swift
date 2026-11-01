@@ -74,3 +74,45 @@ public enum Sessions {
         }
     }
 }
+
+/// Copies items into `directory`, replacing anything already there, and marks every file copied
+/// (`CopiedBytes`). Missing sources are skipped.
+func copyReplacing(_ items: [URL], into directory: URL) throws {
+    let fm = FileManager.default
+    try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+    for item in items where fm.fileExists(atPath: item.path) {
+        let destination = directory.appendingPathComponent(item.lastPathComponent)
+        if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
+        try fm.copyItem(at: item, to: destination)
+        for path in [destination.path] + (fm.subpaths(atPath: destination.path) ?? []).map({ destination.path + "/" + $0 }) {
+            try CopiedBytes.mark(path)
+        }
+    }
+}
+
+/// A conversation copied into another account's folder holds the first account's work, and the
+/// readers of usage and activity would count it as this one's. Each copied file keeps its length at
+/// the copy in an extended attribute, and those readers start after it; resuming reads it all.
+enum CopiedBytes {
+    static let attribute = "io.cynco.consolidatex.copied-bytes"
+
+    /// Records a regular file's length, over any mark it was copied with; folders and links are left alone.
+    static func mark(_ path: String) throws {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { throw failure("read", path) }
+        guard info.st_mode & S_IFMT == S_IFREG else { return }
+        let value = Array(String(info.st_size).utf8)
+        guard setxattr(path, attribute, value, value.count, 0, XATTR_NOFOLLOW) == 0 else { throw failure("mark", path) }
+    }
+
+    /// How many bytes at the start of an open file came with a copy: 0 for a file never copied.
+    static func count(in file: Int32) -> UInt64 {
+        var value = [UInt8](repeating: 0, count: 20)
+        let length = fgetxattr(file, attribute, &value, value.count, 0, 0)
+        return length > 0 ? UInt64(String(decoding: value.prefix(length), as: UTF8.self)) ?? 0 : 0
+    }
+
+    private static func failure(_ action: String, _ path: String) -> AccError {
+        .system("cannot \(action) the copy \(path): \(String(cString: strerror(errno)))")
+    }
+}

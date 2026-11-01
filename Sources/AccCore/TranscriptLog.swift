@@ -142,6 +142,7 @@ public actor TranscriptLog {
     private static let dot = Array(".".utf8), dotDot = Array("..".utf8), jsonl = Array(".jsonl".utf8)
 
     /// A file shorter than what was read before has been rewritten, so it's read again from the start.
+    /// What another account's conversation held when it was copied in is never read.
     private static func readAppended(_ path: String, after previous: FileState, cutoff: Date) -> FileState {
         let file = open(path, O_RDONLY)
         guard file >= 0 else { return previous }
@@ -151,6 +152,7 @@ public actor TranscriptLog {
         let size = UInt64(info.st_size)
         var state = size < previous.offset ? FileState() : previous
         state.responses = state.responses.filter { $0.value.at > cutoff }
+        state.offset = max(state.offset, CopiedBytes.count(in: file))
         guard size > state.offset else { return state }
         // Read a megabyte at a time into one buffer; a line longer than the buffer doubles it.
         var buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: Int(min(size - state.offset, 1 << 20)), alignment: 1)
