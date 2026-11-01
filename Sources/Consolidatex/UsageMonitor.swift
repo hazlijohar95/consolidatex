@@ -74,6 +74,9 @@ final class UsageMonitor: ObservableObject {
         }
     }
 
+    /// Makes the next refresh read an account's login again, as after it logs in or its email changes.
+    func rereadIdentity(of id: String) { identitiesRead.remove(id) }
+
     /// Worked on in the last 3 minutes.
     func isActive(_ account: Account, at now: Date) -> Bool {
         lastActive[account.id].map { now.timeIntervalSince($0) < 180 } ?? false
@@ -93,9 +96,11 @@ final class UsageMonitor: ObservableObject {
         guard !readingLocal else { return }
         readingLocal = true
         let registry = self.registry, usages = self.usages, now = Date()
-        // Logins rarely change and Claude Code's state file can run to megabytes, so only new accounts are read.
+        // Logins rarely change and Claude Code's state file can run to megabytes, so only new accounts,
+        // and those `rereadIdentity` names, are read.
         let unread = registry.accounts.filter { force || !identitiesRead.contains($0.id) }
-        identitiesRead.formUnion(unread.map(\.id))
+        let unreadIDs = Set(unread.map(\.id))
+        identitiesRead.formUnion(unreadIDs)
         let logs = registry.accounts(for: .claude).map { ($0.id, self.logs[$0.id] ?? TranscriptLog(folder: $0.folder())) }
         let known = identities
         self.logs = Dictionary(uniqueKeysWithValues: logs)
@@ -130,7 +135,9 @@ final class UsageMonitor: ObservableObject {
                 if running != self.running { self.running = running }
                 if activity != self.activity { self.activity = activity }
                 if active != self.lastActive { self.lastActive = active }
-                if !identities.isEmpty { self.identities.merge(identities) { $1 } }
+                // An account read with no login found has none now.
+                let read = self.identities.filter { !unreadIDs.contains($0.key) }.merging(identities) { $1 }
+                if read != self.identities { self.identities = read }
                 self.update(readings, spent: spent, at: now)
                 self.readingLocal = false
                 if !self.fetching { self.spinning = false }
