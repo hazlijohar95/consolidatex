@@ -86,6 +86,15 @@ import Testing
         #expect(found.map(\.command) == ["claude"])
         #expect(found.first?.target == "$HOME/.claude/local/claude")
     }
+
+    @Test func aSymlinkedStartupFileStaysALink() throws {
+        let home = tempHome()
+        write("export A=1\n", to: home + "/dotfiles/zshrc")
+        try FileManager.default.createSymbolicLink(atPath: home + "/.zshrc", withDestinationPath: "dotfiles/zshrc")
+        #expect(try ShellInit.installHook(.zsh, home: home) == .installed)
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.zshrc") == "dotfiles/zshrc")
+        #expect(try String(contentsOfFile: home + "/dotfiles/zshrc", encoding: .utf8).hasSuffix(#"eval "$(acc shell-init zsh)""# + "\n"))
+    }
 }
 
 @Suite struct Adding {

@@ -97,9 +97,12 @@ public enum ShellInit {
         return .installed
     }
 
+    /// Writes to where a symlink points, so a startup file kept in a dotfiles folder stays linked:
+    /// an atomic write replaces whatever is at the path it's given.
     private static func write(_ text: String, to file: String) throws {
-        try FileManager.default.createDirectory(atPath: (file as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        try text.write(toFile: file, atomically: true, encoding: .utf8)
+        let target = URL(fileURLWithPath: file).resolvingSymlinksInPath().path
+        try FileManager.default.createDirectory(atPath: (target as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try text.write(toFile: target, atomically: true, encoding: .utf8)
     }
 }
 
