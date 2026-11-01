@@ -273,13 +273,7 @@ final class Model: ObservableObject {
     }
 
     func useRoomiest() {
-        guard let registry else { return }
-        let usage = monitor.readings
-        for tool in registry.tools {
-            if registry.accounts(for: tool).contains(where: { usage[$0.id] != nil }), let best = registry.byHeadroom(tool, usage).first {
-                use(best)
-            }
-        }
+        for account in registry?.mostLeft(monitor.readings) ?? [] { use(account) }
     }
 
     /// Registers a new account, shares its tool's primary config with it, then starts its login.
@@ -331,10 +325,9 @@ final class Model: ObservableObject {
         Task.detached {
             var lines: [String] = []
             var failure: String?
-            for account in registry.ordered {
-                guard let primary = registry.primary(for: account.tool), primary.id != account.id else { continue }
+            for (account, _, result) in Shared.syncAll(registry, runners: runners, prune: false) {
                 do {
-                    let changes = try Shared.sync(account, primary: primary, runner: runners[account.tool], prune: false)
+                    let changes = try result.get()
                     if !changes.isEmpty { lines.append("\(account.label): \(changes.joined(separator: ", "))") }
                 } catch {
                     failure = "\(account.label): \(error)"
