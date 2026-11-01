@@ -41,7 +41,7 @@ public enum LiveUsage {
 
     /// Runs blocking work (waiting on a process or a keychain prompt) on a dispatch thread, so it
     /// doesn't hold one of Swift concurrency's few cooperative threads for seconds.
-    static func offPool<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+    public static func offPool<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
         await withCheckedContinuation { done in DispatchQueue.global().async { done.resume(returning: work()) } }
     }
 
