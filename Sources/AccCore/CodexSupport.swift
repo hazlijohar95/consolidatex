@@ -89,17 +89,18 @@ public enum CodexSupport {
     }
 
     /// A token_count event line → Usage. Only the main "codex" limit counts toward the subscription.
+    /// An event without a time is left out: it would read as new every time and never age.
     public static func parseTokenCount(_ line: String) -> Usage? {
         struct Window: Decodable { let used_percent: Double; let window_minutes: Int?; let resets_at: Double? }
         struct Limits: Decodable { let limit_id: String?; let plan_type: String?; let primary: Window?; let secondary: Window? }
         struct Payload: Decodable { let type: String; let rate_limits: Limits? }
         struct Event: Decodable { let timestamp: String?; let payload: Payload }
         guard let event = try? JSONDecoder().decode(Event.self, from: Data(line.utf8)),
-              event.payload.type == "token_count", let limits = event.payload.rate_limits
+              event.payload.type == "token_count", let limits = event.payload.rate_limits,
+              let at = event.timestamp.flatMap(Date.init(iso8601:))
         else { return nil }
         let window = { (w: Window?) in w.map { RateWindow(usedPercent: $0.used_percent, minutes: $0.window_minutes, resetsAt: $0.resets_at) } }
-        return usage(limitID: limits.limit_id, plan: limits.plan_type, primary: window(limits.primary), secondary: window(limits.secondary),
-                     at: event.timestamp.flatMap { try? Date.iso8601.parse($0) } ?? Date())
+        return usage(limitID: limits.limit_id, plan: limits.plan_type, primary: window(limits.primary), secondary: window(limits.secondary), at: at)
     }
 
     /// One rate-limit window as Codex reports it, in a session file or from its app server.

@@ -85,6 +85,32 @@ func append(_ text: String, to path: String) throws {
     }
 }
 
+/// A reading is as old as its event. One taken as new each time it's read would hide every later
+/// reading and never age.
+@Suite struct CodexReadingTimes {
+    let undated = #"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":90,"window_minutes":300,"resets_at":1800003600}}}}"#
+
+    func dated(_ timestamp: String, percent: Int) -> String {
+        undated.replacingOccurrences(of: #"{"type""#, with: #"{"timestamp":"\#(timestamp)","type""#)
+            .replacingOccurrences(of: #""used_percent":90"#, with: #""used_percent":\#(percent)"#)
+    }
+
+    @Test func aTokenCountWithoutATimeIsNoReading() {
+        #expect(CodexSupport.parseTokenCount(undated) == nil)
+        for timestamp in ["2026-10-30T10:00:00Z", "2026-10-30T10:00:00.500Z"] {
+            #expect(CodexSupport.parseTokenCount(dated(timestamp, percent: 40))?.recordedAt == Date(timeIntervalSince1970: 1_793_354_400))
+        }
+    }
+
+    @Test func theNewestDatedTokenCountWins() {
+        let file = tempHome() + "/rollout.jsonl"
+        write(dated("2026-10-30T10:00:00Z", percent: 40) + "\n" + undated + "\n", to: file)
+        let usage = CodexSupport.lastTokenCount(in: URL(fileURLWithPath: file), bytes: 1 << 20)
+        #expect(usage?.recordedAt == Date(timeIntervalSince1970: 1_793_354_400))
+        #expect(usage?.windows.first?.usedPercentage == 40)
+    }
+}
+
 @Suite struct CodexAppServerExits {
     /// Writing to a Codex that stopped reading raises SIGPIPE, which would end the app.
     @Test func aCodexThatStopsReadingIsAFailedRead() throws {

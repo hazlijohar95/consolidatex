@@ -527,7 +527,7 @@ func write(_ text: String, to path: String) {
     }
 
     @Test func codexWindowsWithoutAResetAreLeftOut() {
-        let line = #"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":100,"window_minutes":300},"secondary":{"used_percent":10,"window_minutes":10080,"resets_at":1800500000}}}}"#
+        let line = #"{"timestamp":"2026-10-30T10:00:00.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":100,"window_minutes":300},"secondary":{"used_percent":10,"window_minutes":10080,"resets_at":1800500000}}}}"#
         #expect(CodexSupport.parseTokenCount(line)?.windows.map(\.label) == ["7d"])
     }
 
