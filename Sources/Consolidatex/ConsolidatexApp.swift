@@ -386,6 +386,9 @@ final class Model: ObservableObject {
     /// Runs the tool's login and watches its status until the browser flow completes.
     nonisolated private static func runLogin(_ account: Account, runner: Runner) -> LoginResult {
         try? runner.prepare(account)
+        // Logging in again over a working login: only a changed login, or the command finishing,
+        // ends the wait. Otherwise the first poll would see the old login and stop this one.
+        let before = try? runner.authStatus(for: account)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: runner.executable)
         process.arguments = runner.arguments(for: account, account.tool.spec.loginArguments)
@@ -400,7 +403,7 @@ final class Model: ObservableObject {
         let deadline = Date() + 300
         while Date() < deadline {
             Thread.sleep(forTimeInterval: 2)
-            if (try? runner.authStatus(for: account))?.loggedIn == true { return .success }
+            if let status = try? runner.authStatus(for: account), status.loggedIn, status != before { return .success }
             if !process.isRunning {
                 if (try? runner.authStatus(for: account))?.loggedIn == true { return .success }
                 let text = String(decoding: output.fileHandleForReading.availableData, as: UTF8.self)
