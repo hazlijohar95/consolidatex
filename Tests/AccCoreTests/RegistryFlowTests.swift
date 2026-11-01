@@ -97,6 +97,25 @@ import Testing
     }
 }
 
+@Suite struct SyncAll {
+    @Test func syncsEveryOtherAccountAndKeepsGoingPastAFailure() throws {
+        let home = tempHome()
+        write("model = 1", to: home + "/.codex/config.toml")
+        try FileManager.default.createDirectory(atPath: home + "/.codex-ro", withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: home + "/.codex-ro")
+        let r = Registry(current: [.codex: "main"], accounts: [
+            Account(id: "ro", tool: .codex, label: "RO", configDir: home + "/.codex-ro"),
+            Account(id: "main", tool: .codex, label: "Main", configDir: nil),
+            Account(id: "side", tool: .codex, label: "Side", configDir: home + "/.codex-side"),
+        ])
+        let results = Shared.syncAll(r, runners: [:], prune: false, home: home)
+        #expect(results.map(\.account.id) == ["ro", "side"])
+        #expect(results.allSatisfy { $0.primary.id == "main" })
+        #expect(throws: (any Error).self) { try results[0].result.get() }
+        #expect(try results[1].result.get() == ["linked config.toml"])
+    }
+}
+
 @Suite struct Adding {
     @Test func addNewNamesAndPlacesTheAccount() throws {
         var r = sample

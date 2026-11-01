@@ -45,6 +45,7 @@ func fail(_ error: AccError) -> Never {
 
 func say(_ line: String = "") { print(line) }
 func warn(_ line: String) { FileHandle.standardError.write(Data("acc: \(line)\n".utf8)) }
+func message(_ error: any Error) -> String { (error as? AccError)?.description ?? error.localizedDescription }
 
 func json<T: Encodable>(_ value: T) throws -> String {
     let encoder = JSONEncoder()
@@ -316,7 +317,8 @@ func setupApp(assumeYes: Bool) throws {
 
 func setup(assumeYes: Bool) throws {
     say("Consolidatex setup\n")
-    let installed = Array(Runner.locateAll().keys)
+    let runners = Runner.locateAll()
+    let installed = Array(runners.keys)
     for tool in Tool.allCases {
         say(installed.contains(tool) ? "  ✓ \(tool.spec.name)" : "  – \(tool.spec.name) (not installed)")
     }
@@ -366,10 +368,11 @@ func setup(assumeYes: Bool) throws {
         registry.primary(for: a.tool).map { $0.id != a.id && !Shared.issues(a, primary: $0).isEmpty } ?? false
     }
     if !drifting.isEmpty, ask("\n\(drifting.count) account\(drifting.count == 1 ? "" : "s") don't share config (rules, settings, skills, MCP servers) with their tool's primary. Share it?", assumeYes: assumeYes) {
-        for account in drifting {
-            let primary = registry.primary(for: account.tool)!
-            let changes = try Shared.sync(account, primary: primary, runner: try? Runner.locate(account.tool), prune: false)
-            if !changes.isEmpty { say("  \(account.id): \(changes.joined(separator: ", "))") }
+        for (account, _, result) in Shared.syncAll(registry, runners: runners, prune: false) {
+            switch result {
+            case .success(let changes): if !changes.isEmpty { say("  \(account.id): \(changes.joined(separator: ", "))") }
+            case .failure(let error): warn("\(account.id): \(message(error))")
+            }
         }
     }
 
@@ -461,14 +464,14 @@ func main() throws {
         do {
             for change in try Shared.setUp(account, in: registry, runner: runner) { say("  \(change)") }
         } catch {
-            warn("\(error)")
+            warn(message(error))
             throw AccError.system("added '\(account.id)', but couldn't share its config; finish with: acc sync, then acc login \(account.id)")
         }
         let status: Runner.AuthStatus
         do {
             status = try ensureLoggedIn(account, runner: runner)
         } catch {
-            warn("\(error)")
+            warn(message(error))
             throw AccError.system("added '\(account.id)', but it isn't logged in; try again with: acc login \(account.id)")
         }
         try store.update { $0.recordEmail(status.email, for: account.id) }
@@ -509,14 +512,18 @@ func main() throws {
 
     case "sync":
         let prune = flag("--prune", in: &args)
-        let registry = try store.load()
-        var changed = false
-        for account in registry.ordered {
-            guard let primary = registry.primary(for: account.tool), primary.id != account.id else { continue }
-            let changes = try Shared.sync(account, primary: primary, runner: try? Runner.locate(account.tool), prune: prune)
-            if !changes.isEmpty { say("\(account.id): \(changes.joined(separator: ", "))"); changed = true }
+        var changed = false, failed = false
+        for (account, primary, result) in Shared.syncAll(try store.load(), runners: Runner.locateAll(), prune: prune) {
+            switch result {
+            case .success(let changes):
+                if !changes.isEmpty { say("\(account.id): \(changes.joined(separator: ", "))"); changed = true }
+            case .failure(let error):
+                warn("\(account.id): \(message(error))")
+                failed = true
+            }
             for issue in Shared.issues(account, primary: primary) { say("! \(account.id): \(issue)") }
         }
+        if failed { exit(1) }
         if !changed { say("everything already shares its primary's config") }
 
     case "setup":
