@@ -24,7 +24,7 @@ public struct Detour: Codable, Equatable, Sendable {
 extension Registry {
     /// Where new sessions of `tool` should start when following usage: off a capped current account
     /// onto the one with the most left, and back along `detour` once the picked account has room.
-    /// "Room" means under 90% on every window, the same rule as `roomiest`, so a picked account that
+    /// "Room" means under 90% on every shared window, the same rule as `roomiest`, so a picked account that
     /// reset one window but sits at 98% of another doesn't bounce back and forth.
     /// Nil when the current account should stay.
     public func autoPick(_ tool: Tool, _ usage: [String: Usage], detour: Detour?, at now: Date = Date()) -> Account? {

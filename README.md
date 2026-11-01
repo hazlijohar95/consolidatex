@@ -69,7 +69,7 @@ Open **Last 7 Days…** from the panel's **⋯** menu, or run `acc report`. For 
 
 The menu bar shows the usage of the account you're working in. Click it for the panel:
 
-- Each account shows its 5-hour usage as a bar and its other limits as percentages, with a countdown to the next reset.
+- Each account shows its 5-hour usage as a bar and its other limits as percentages, with a countdown to the next reset. A limit on one model, such as "7d Fable 100%", doesn't mark the account capped, because it keeps working on other models.
 - **Next session** marks the account new sessions start on. **Most tokens left** marks the account with the most of its limits unused.
 - A yellow line warns when an account will hit a limit before it resets, at its current pace.
 - You get a notification when a capped account resets.
@@ -121,7 +121,8 @@ All state lives in `~/.config/acc/accounts.json`. Every change is checked before
 - **`claude` ignores the account you picked.** Open a new terminal. If it still does, run `acc doctor`. It reports a missing shell line.
 - **`acc add` stopped at the login.** The account is already in the list. Run `acc login <name>` to log it in.
 - **An account shows "no usage yet".** Claude Code: use it once, or turn on live Claude usage. Codex: start a session on it.
-- **The panel shows a red message under an account.** That's the last error from asking for its usage, such as an expired login. Run `acc login <name>`.
+- **The panel shows a red message under an account.** That's the last error from asking for its usage, such as a missing login. Run `acc login <name>`.
+- **The panel says "updates when this account is next used".** The account is logged in, but Claude Code renews the token the usage check needs only when the account is used. The panel keeps the last reading until then.
 - **The app says a tool isn't installed.** The app looks for tools on your login shell's `PATH`. Check that `which claude` works in a new terminal.
 
 Kiro CLI isn't supported. It keeps its login in one database that no setting can move, so separate Kiro accounts would need a different `HOME`, which affects every other tool.

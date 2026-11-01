@@ -15,14 +15,14 @@ final class UsageMonitor: ObservableObject {
     /// The apps running sessions on each account now. Counts rather than processes, so a session
     /// that's replaced by a new process (the Agent SDK starts one per query) doesn't redraw the panel.
     @Published private(set) var running: [String: [AppCount]] = [:]
-    /// Why the last live read of an account failed; shown beside its last good reading until a newer one arrives.
-    @Published private(set) var problems: [String: LiveUsage.Failure] = [:]
+    /// Why the last live read of an account brought no reading; shown beside its last good reading until a newer one arrives.
+    @Published private(set) var misses: [String: LiveUsage.Miss] = [:]
     /// A refresh someone asked for is running. Timer ticks don't set it, so they don't redraw the panel.
     @Published private(set) var spinning = false
     @Published var liveClaude: Bool {
         didSet {
             UserDefaults.standard.set(liveClaude, forKey: Keys.liveClaude)
-            if liveClaude { refresh() } else { problems = problems.filter { registry.account(id: $0.key)?.tool != .claude } }
+            if liveClaude { refresh() } else { misses = misses.filter { registry.account(id: $0.key)?.tool != .claude } }
         }
     }
 
@@ -163,17 +163,18 @@ final class UsageMonitor: ObservableObject {
             }
             for case let (id, .reading(reading)) in outcomes { _ = try? usages.store.merge(reading, for: id, at: now) }
             await MainActor.run {
-                var problems = self.problems
+                var misses = self.misses
                 for (id, outcome) in outcomes {
                     self.schedule.record(outcome, for: id, at: now)
-                    problems[id] = switch outcome {
+                    misses[id] = switch outcome {
                     case .reading: nil
-                    case .failed(let reason): LiveUsage.Failure(reason, at: now)
+                    case .tokenExpired: LiveUsage.Miss(.tokenExpired, at: now)
+                    case .failed(let reason): LiveUsage.Miss(.failed(reason), at: now)
                     case .retryAfter(let seconds):
-                        self.readings[id] == nil ? LiveUsage.Failure("Anthropic is pacing usage checks; next in \(Int(seconds / 60) + 1) min", at: now) : nil
+                        self.readings[id] == nil ? LiveUsage.Miss(.failed("Anthropic is pacing usage checks; next in \(Int(seconds / 60) + 1) min"), at: now) : nil
                     }
                 }
-                if problems != self.problems { self.problems = problems }
+                if misses != self.misses { self.misses = misses }
                 UserDefaults.standard.set(try? JSONEncoder().encode(self.schedule), forKey: Keys.schedule)
                 self.fetching = false
                 self.readLocal()
@@ -183,10 +184,10 @@ final class UsageMonitor: ObservableObject {
 
     private func update(_ readings: [String: Usage], spent: [String: [Origin: Int]], at now: Date) {
         if readings != self.readings { self.readings = readings }
-        // A reading written after a failed live read means the account works again (a message refreshes
-        // an expired login), so it clears the failure without waiting up to 5 minutes for the next read.
-        let open = problems.filter { !$0.value.isAnswered(by: readings[$0.key]) }
-        if open != problems { problems = open }
+        // A reading written after a missed live read means the account works again (a message renews an
+        // expired token), so it clears the miss without waiting up to 5 minutes for the next read.
+        let open = misses.filter { !$0.value.isAnswered(by: readings[$0.key]) }
+        if open != misses { misses = open }
         let nowCapped = Set(readings.filter { $0.value.isCapped(at: now) }.keys)
         // The first refresh after launch has nothing to compare with, so it reports no changes.
         let changes = capped.map { LimitChanges(capped: Array(nowCapped.subtracting($0)), ready: Array($0.subtracting(nowCapped))) } ?? LimitChanges()

@@ -165,8 +165,7 @@ private enum Replies {
 @Suite struct ExpiredLogins {
     @Test func anExpiredTokenIsNotALoginFailure() async {
         let expired = ClaudeUsageAPI.Login(accessToken: "unused", expiresAt: (t0 - 60).timeIntervalSince1970 * 1000)
-        let outcome = await ClaudeUsageAPI.fetch(with: expired, at: t0)
-        if case .failed(let reason) = outcome { Issue.record("an expired token read as a failure: \(reason)") }
+        #expect(await ClaudeUsageAPI.fetch(with: expired, at: t0) == .tokenExpired)
     }
 
     @Test func noLoginIsStillAFailure() async {

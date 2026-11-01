@@ -111,12 +111,12 @@ func write(_ text: String, to path: String) {
         #expect(schedule.due(["a", "b"], at: t0 + 900) == ["a", "b"])
     }
 
-    @Test func aLaterReadingAnswersAFailedLiveRead() {
-        let failure = LiveUsage.Failure("Login expired; one message on this account refreshes it", at: t0)
-        #expect(failure.isAnswered(by: Usage(windows: [], recordedAt: t0 + 5)))
-        #expect(!failure.isAnswered(by: Usage(windows: [], recordedAt: t0)))
-        #expect(!failure.isAnswered(by: Usage(windows: [], recordedAt: t0 - 60)))
-        #expect(!failure.isAnswered(by: nil))
+    @Test func aLaterReadingAnswersAMissedLiveRead() {
+        let miss = LiveUsage.Miss(.tokenExpired, at: t0)
+        #expect(miss.isAnswered(by: Usage(windows: [], recordedAt: t0 + 5)))
+        #expect(!miss.isAnswered(by: Usage(windows: [], recordedAt: t0)))
+        #expect(!miss.isAnswered(by: Usage(windows: [], recordedAt: t0 - 60)))
+        #expect(!miss.isAnswered(by: nil))
     }
 }
 

@@ -204,7 +204,7 @@ private struct ToolSection: View {
                          isPicked: choosing && registry.isCurrent(account),
                          isNext: choosing && next?.id == account.id && readings[account.id] != nil,
                          isActive: model.monitor.isActive(account, at: now),
-                         problem: model.monitor.problems[account.id]?.reason,
+                         miss: model.monitor.misses[account.id]?.reason,
                          login: model.logins[account.id],
                          running: model.monitor.running[account.id] ?? [],
                          mode: focus?.id == account.id ? focus?.mode : nil,
@@ -256,7 +256,7 @@ private struct UsageRow: View {
     let isPicked: Bool
     let isNext: Bool
     let isActive: Bool
-    let problem: String?
+    let miss: LiveUsage.Miss.Reason?
     let login: Model.Login?
     let running: [AppCount]
     let mode: RowFocus.Mode?
@@ -376,10 +376,25 @@ private struct UsageRow: View {
                     .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.pick)
                     .help("Moves the latest conversation to \(move.target) and resumes it there, in Terminal")
             }
-            if let problem { Text(problem).problem() }
+            missNote
         }
         .padding(.horizontal, 8).padding(.vertical, 7)
         .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var missNote: some View {
+        switch miss {
+        case .failed(let reason):
+            Text(reason).problem()
+        case .tokenExpired:
+            Text(usage.map { "Usage as of \($0.recordedAt.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute())) · updates when this account is next used" }
+                 ?? "Updates when this account is next used")
+                .font(Theme.caption).foregroundStyle(Theme.ink(0.45)).lineLimit(2)
+                .help("Still logged in. The usage check needs a current token, and Claude Code renews it when the account is used.")
+        case nil:
+            EmptyView()
+        }
     }
 
     @ViewBuilder

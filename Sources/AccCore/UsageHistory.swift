@@ -5,9 +5,9 @@ import Foundation
 public struct UsageHistory: Sendable {
     public struct Sample: Codable, Equatable, Sendable {
         public let at: Date
-        /// The fullest window's share used; 100 means capped.
+        /// The fullest shared window's share used; 100 means capped.
         public let load: Double
-        /// The fullest weekly window's share used, for an account with a weekly limit.
+        /// The fullest shared weekly window's share used, for an account with a weekly limit all its models share.
         public let week: Double?
         /// Output tokens spent since the previous sample, by where, for Claude Code accounts. Adding
         /// these up over a week gives exact shares.
@@ -21,7 +21,7 @@ public struct UsageHistory: Sendable {
         }
 
         public init(_ usage: Usage, at now: Date, tokens: [Origin: Int] = [:]) {
-            self.init(at: now, load: usage.load(at: now), week: usage.windows.filter { $0.minutes >= 10_080 }.map { $0.used(at: now) }.max(),
+            self.init(at: now, load: usage.load(at: now), week: usage.sharedWindows.filter { $0.minutes >= 10_080 }.map { $0.used(at: now) }.max(),
                       apps: tokens.isEmpty ? nil : AppTokens(tokens))
         }
     }

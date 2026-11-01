@@ -44,7 +44,7 @@ struct QuickSwitchView: View {
 
     private func row(_ account: Account, now: Date) -> some View {
         let usage = model.monitor.readings[account.id]
-        // The fullest window, which is what "most tokens left" ranks by.
+        // The fullest shared window, which is what "most tokens left" ranks by.
         let used = usage.map { $0.load(at: now) }
         let capped = usage?.isCapped(at: now) ?? false
         return HStack(spacing: 8) {

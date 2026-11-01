@@ -87,13 +87,17 @@ public struct Usage: Codable, Equatable, Sendable {
         self.recordedAt = recordedAt
     }
 
-    /// The fullest window: what decides whether the account can take more work.
-    public func load(at now: Date) -> Double { windows.map { $0.used(at: now) }.max() ?? 0 }
+    /// The windows every model counts against. A per-model limit ("7d Fable") stops only that model,
+    /// and the account keeps working on the others, so it never decides whether the account has room.
+    public var sharedWindows: [Window] { windows.filter { $0.model == nil } }
+
+    /// The fullest shared window: what decides whether the account can take more work.
+    public func load(at now: Date) -> Double { sharedWindows.map { $0.used(at: now) }.max() ?? 0 }
 
     public func isCapped(at now: Date) -> Bool { load(at: now) >= 100 }
 
     public func limitingWindow(at now: Date) -> Window? {
-        windows.filter { $0.used(at: now) > 0 }.max { $0.usedPercentage < $1.usedPercentage }
+        sharedWindows.filter { $0.used(at: now) > 0 }.max { $0.usedPercentage < $1.usedPercentage }
     }
 
     /// When the window read longest ago was read.

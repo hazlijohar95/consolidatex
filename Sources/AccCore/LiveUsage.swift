@@ -7,18 +7,26 @@ public enum LiveUsage {
     public enum Outcome: Equatable, Sendable {
         case reading(Usage)
         case retryAfter(TimeInterval)
+        /// The login's access token ran out. The tool renews it the next time the account is used, so
+        /// the account is still logged in and its last reading stands until then.
+        case tokenExpired
         case failed(String)
     }
 
     public static let spacing: TimeInterval = 300
 
-    /// Why a live read failed, and when. A reading recorded after it answers it: the status line's,
-    /// for one, once the account is used again, which also refreshes an expired login.
-    public struct Failure: Equatable, Sendable {
-        public let reason: String
+    /// Why a live read brought no reading, and when. A reading recorded after it answers it: the status
+    /// line's, for one, once the account is used again, which also renews an expired token.
+    public struct Miss: Equatable, Sendable {
+        public enum Reason: Equatable, Sendable {
+            case tokenExpired
+            case failed(String)
+        }
+
+        public let reason: Reason
         public let at: Date
 
-        public init(_ reason: String, at: Date) {
+        public init(_ reason: Reason, at: Date) {
             self.reason = reason
             self.at = at
         }
@@ -69,7 +77,7 @@ public enum LiveUsage {
 
         public mutating func record(_ outcome: Outcome, for id: String, at now: Date) {
             switch outcome {
-            case .reading, .failed:
+            case .reading, .tokenExpired, .failed:
                 next[id] = now + LiveUsage.spacing
             case .retryAfter(let seconds):
                 blocked[id] = now + seconds

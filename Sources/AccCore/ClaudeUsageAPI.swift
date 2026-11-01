@@ -16,7 +16,7 @@ enum ClaudeUsageAPI {
     static func fetch(with login: Login?, at now: Date) async -> Outcome {
         guard let login else { return .failed("Not logged in") }
         if let expiresAt = login.expiresAt, expiresAt / 1000 < now.timeIntervalSince1970 {
-            return .failed("Login expired; one message on this account refreshes it")
+            return .tokenExpired
         }
         var request = URLRequest(url: endpoint, timeoutInterval: 15)
         request.setValue("Bearer \(login.accessToken)", forHTTPHeaderField: "Authorization")
