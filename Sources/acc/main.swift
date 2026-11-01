@@ -82,13 +82,12 @@ func describe(_ a: Account) -> String {
 }
 
 func switchTo(_ ref: String, tool: Tool? = nil) throws {
-    var chosen: Account?
-    try store.update { r in
+    let chosen = try store.update { r in
         let account = try r.resolve(ref, tool: tool)
         try r.use(account.id)
-        chosen = account
+        return account
     }
-    if let chosen { say("\(chosen.tool.spec.command) → \(describe(chosen))") }
+    say("\(chosen.tool.spec.command) → \(describe(chosen))")
 }
 
 /// Interactive pick. Returns the chosen account id, or nil if cancelled.
@@ -487,13 +486,12 @@ func main() throws {
 
     case "rm":
         guard let ref = args.first else { throw AccError.usage("usage: acc rm <account>") }
-        var removed: Account?
-        try store.update { r in
+        let removed = try store.update { r in
             let account = try r.resolve(ref)
             try r.remove(account.id)
-            removed = account
+            return account
         }
-        if let removed { say("removed \(removed.id); its folder \(removed.folder()) was left in place") }
+        say("removed \(removed.id); its folder \(removed.folder()) was left in place")
 
     case "doctor":
         if try !doctor(fix: flag("--fix", in: &args)) { exit(1) }

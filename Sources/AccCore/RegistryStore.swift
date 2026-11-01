@@ -61,12 +61,16 @@ public struct RegistryStore: Sendable {
         do { return try load() } catch AccError.registryMissing { return .empty }
     }
 
+    /// Applies `change` to the registry on disk, or to an empty one before the first account, and
+    /// saves the result. A change that makes no difference writes nothing, so it doesn't wake
+    /// whatever watches the file. Returns what `change` returns; on any error the file is untouched.
     @discardableResult
-    public func update(_ change: (inout Registry) throws -> Void) throws -> Registry {
-        var registry = try load()
-        try change(&registry)
-        try save(registry)
-        return registry
+    public func update<T>(_ change: (inout Registry) throws -> T) throws -> T {
+        let before = try loadOrEmpty()
+        var registry = before
+        let result = try change(&registry)
+        if registry != before { try save(registry) }
+        return result
     }
 
     private static func describe(_ error: Error) -> String {

@@ -44,7 +44,7 @@ A rule that both the CLI and the app need belongs in AccCore. If a view starts d
 - `current` names the account each tool's next session starts on.
 - `removed` lists folders that `acc rm` took out, so discovery doesn't add them back. `Registry.Removed.matches` compares folders after expanding `~` and resolving symlinks, so `~/.codex-old` and `/Users/me/.codex-old` count as the same folder.
 
-`Registry.validate()` rejects a registry where ids are invalid or repeat, where a tool has no current account, or where two accounts of one tool share a folder. `RegistryStore.save` validates before it writes. It writes a temporary file next to `accounts.json`, then renames it over the original, so a reader never sees half a file. The edits that people make (`add`, `use`, `rename`, `remove`, `move`) are methods on `Registry` in `Editing.swift`. The CLI and the app share them, so both enforce the same rules.
+`Registry.validate()` rejects a registry where ids are invalid or repeat, where a tool has no current account, or where two accounts of one tool share a folder. `RegistryStore.save` validates before it writes. It writes a temporary file next to `accounts.json`, then renames it over the original, so a reader never sees half a file. Changes go through `RegistryStore.update`, which reads the file, applies the change, and saves only if something changed, so a change that makes no difference doesn't wake the app's file watcher. The edits that people make (`add`, `use`, `rename`, `remove`, `move`) are methods on `Registry` in `Editing.swift`. The CLI and the app share them, so both enforce the same rules.
 
 ## Starting a session on an account
 
