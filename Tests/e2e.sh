@@ -152,6 +152,8 @@ print -r -- '{"timestamp":"2026-10-30T10:00:00.000Z","type":"event_msg","payload
   > $H/.codex/sessions/2026/10/30/rollout-2026-10-30T10-00-00-0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b.jsonl
 check 'codex usage read from its sessions' "$(acc ls codex | grep codex-default | awk -F'  ' '{print $NF}')" '5h 40%'
 check 'auto picks the roomiest'           "$(acc auto claude | head -1)" 'claude → Claude Code: haz-team  Haz (team)  (default@test)'
+check 'ls --json has roomiest key'        "$(acc ls --json | python3 -I -c 'import json,sys; d=json.load(sys.stdin); print("ok" if "roomiest" in d else "fail")')" ok
+check 'ls --json has usage.load for cto' "$(acc ls --json | python3 -I -c 'import json,sys; d=json.load(sys.stdin); a=next((a for a in d["accounts"] if a["id"]=="cto"),None); print(int(a["usage"]["load"]) if a and a.get("usage") else "none")')" 95
 
 # --- continue: newest conversation for this folder moves to the target and resumes there
 proj=$T/work; mkdir -p $proj; slug=${proj//[^A-Za-z0-9]/-}

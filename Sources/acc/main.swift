@@ -50,6 +50,7 @@ func message(_ error: any Error) -> String { (error as? AccError)?.description ?
 func json<T: Encodable>(_ value: T) throws -> String {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    encoder.dateEncodingStrategy = .iso8601
     return String(decoding: try encoder.encode(value), as: UTF8.self)
 }
 
@@ -408,8 +409,15 @@ func main() throws {
 
     case "ls", "list":
         let asJSON = flag("--json", in: &args)
+        let toolFilter = args.first.flatMap(tool(named:))
         let registry = try store.load()
-        if asJSON { say(try json(registry)) } else { rows(registry, tool: args.first.flatMap(tool(named:))).forEach { say($0.1) } }
+        if asJSON {
+            let allUsage = usages.all(registry)
+            let running = Dictionary(grouping: RunningSessions.scan(registry, logins: { ClaudeSupport.logins(in: registry) }), by: \.accountID)
+            say(try json(ListStatus.build(registry: registry, usages: allUsage, running: running, tool: toolFilter)))
+        } else {
+            rows(registry, tool: toolFilter).forEach { say($0.1) }
+        }
 
     case "current":
         let asJSON = flag("--json", in: &args)

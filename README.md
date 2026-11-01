@@ -92,7 +92,7 @@ Where the numbers come from, by tool:
 | `acc` | Pick an account with fzf. Press 1–9 to jump. |
 | `acc <name>`, `acc codex <name>` | Make it the account new sessions start on. |
 | `claude @<name> …` | Run one session on another account. |
-| `acc ls [--json]` | List accounts with their last known usage and the apps running on each now. |
+| `acc ls [--json]` | List accounts with their last known usage and the apps running on each now. `--json` adds per-account usage (load, windows, running apps), `configDirPath`, headroom rank, and a top-level `roomiest` map for tool-routing agents. |
 | `acc auto` | Switch each tool to its account with the most tokens left. |
 | `acc report` | Show the last 7 days: weekly use and hours at a limit, per account. |
 | `acc continue [<name>]` | Move this folder's latest conversation to another account and resume it there. Claude Code and Codex only. |

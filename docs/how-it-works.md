@@ -162,6 +162,10 @@ In the panel, clicking an account asks for confirmation before switching, becaus
 
 What the copy holds is the first account's work, and the readers of usage take every line in an account's folder as that account's. So `copyReplacing` stores each copied file's length in an extended attribute, `io.cynco.consolidatex.copied-bytes`, and `TranscriptLog` and the Codex `token_count` reader start after it (`CopiedBytes`). Without it, a capped Codex account's last reading would cap the target, and a Claude Code account would count the first account's replies of the last 5 hours as its own. Finding and resuming the conversation still read the whole file. A copy that is copied on gets a new mark at its new length, so it never keeps the one it came with. The mark relies on both tools appending to a conversation file. A tool that rewrote one through a new file would drop the mark, and a volume without extended attributes can't hold one, so those copies count as the target's again.
 
+## acc ls --json
+
+`acc ls --json` emits a `ListStatus` value built by `AccCore.ListStatus.build`: the registry's existing keys (`version`, `current`, `accounts`, `removed`) plus per-account `configDirPath`, `current`, `rank` (1 = most headroom within the tool), and `usage` (load, capped, recordedAt, windows with per-now used values) and `running` (app name and count), with a top-level `roomiest` map ({tool: accountId-or-null}) so a skill or agent can pick the best account without re-implementing the headroom logic.
+
 ## Tests
 
 `script/test` runs the unit tests in `Tests/AccCoreTests`, then `Tests/e2e.sh`. The end-to-end script builds a throwaway `HOME` with stub `claude`, `codex` and `opencode` scripts. It then drives the real `acc` binary and the shell functions it generates through setup, switching, `@account`, usage, `continue`, `doctor`, `sync`, rename and removal. The unit tests use the same kind of stub for `codex app-server`. They also include a reply copied from a real Codex.
