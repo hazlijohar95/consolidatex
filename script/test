@@ -16,5 +16,6 @@ if [[ $(xcode-select -p) == $clt && -d $dev/Frameworks/Testing.framework ]]; the
 fi
 
 swift build $build_flags
-swift test $build_flags $testing_flags 2>&1 | grep -E 'passed|failed|error' | tail -3
+# Every failing test and issue, then the totals: a passing run prints one line.
+swift test $build_flags $testing_flags 2>&1 | grep -E 'recorded an issue|failed|error|Test run with'
 ACC_BIN=$(swift build $build_flags --show-bin-path)/acc zsh Tests/e2e.sh
