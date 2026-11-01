@@ -128,6 +128,10 @@ acc add codex 'Client A' >/dev/null
 check 'add links shared codex config'     "$(readlink $H/.codex-client-a/config.toml)" "$H/.codex/config.toml"
 check 'add refuses a duplicate'           "$(acc add codex x --id side 2>&1)" "acc: an account with id 'side' already exists"
 check 'add refuses an unknown tool'       "$(acc add kiro 2>&1 | head -1)" 'acc: usage: acc add <claude|codex|opencode> [<name>] [--id <id>] [--dir <folder>]'
+# Every word main.swift dispatches on must be a reserved id, or an account named that could never be picked.
+dispatched=($(grep -oE '^    case "[^:]+":' $root/Sources/acc/main.swift | grep -oE '"[a-z][a-z-]*"' | tr -d '"'))
+unreserved=($(for c in $dispatched; do acc add codex x --id $c 2>&1 | grep -q 'is not a valid id' || print $c; done))
+check 'every command is a reserved id'    "$(( ${#dispatched} > 15 )) [$unreserved]" '1 []'
 
 # --- adding with a login: listed first, so nothing done during the login is lost
 mkdir -p $H/.codex-race $H/.codex-flaky; touch $H/.codex-race/LOGGED_OUT $H/.codex-flaky/LOGGED_OUT
