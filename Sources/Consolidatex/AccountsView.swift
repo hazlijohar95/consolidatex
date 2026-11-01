@@ -271,7 +271,7 @@ struct AddAccountSheet: View {
         guard var registry else { return "the account registry could not be read" }
         if label.trimmingCharacters(in: .whitespaces).isEmpty { return "Enter a name" }
         do {
-            try registry.add(registry.newAccount(tool: tool, label: label, id: id))
+            try registry.addNew(tool, label: label, id: id)
             return nil
         } catch {
             return String(describing: error)

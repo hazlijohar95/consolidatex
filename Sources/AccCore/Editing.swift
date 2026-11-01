@@ -85,7 +85,7 @@ extension Registry {
     }
 
     /// A new account of `tool` in its own folder under home.
-    public func newAccount(tool: Tool, label: String, id: String? = nil) -> Account {
+    func newAccount(tool: Tool, label: String, id: String? = nil) -> Account {
         let id = id ?? suggestedID(for: label)
         return Account(id: id, tool: tool, label: label, configDir: "~/" + tool.spec.newAccountPrefix + id)
     }

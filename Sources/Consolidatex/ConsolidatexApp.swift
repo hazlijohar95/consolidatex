@@ -286,16 +286,15 @@ final class Model: ObservableObject {
     /// Registered first, so discovery already knows the folder while it fills; sharing runs
     /// `claude mcp add-json` once per server, so it stays off the main thread.
     func add(tool: Tool, label: String, id: String) {
-        guard let registry else { return }
-        let account = registry.newAccount(tool: tool, label: label, id: id)
-        let primary = registry.primary(for: tool)
-        let runner = runners[tool]
+        guard let runner = runners[tool] else {
+            lastError = "\(tool.spec.command) is not installed"
+            return
+        }
         lastError = nil
-        guard edit({ try $0.add(account) }) != nil else { return }
+        guard let account = edit({ try $0.addNew(tool, label: label, id: id) }), let registry else { return }
         Task.detached {
             do {
-                try runner?.prepare(account)
-                if let primary { _ = try Shared.sync(account, primary: primary, runner: runner, prune: false) }
+                _ = try Shared.setUp(account, in: registry, runner: runner)
                 await MainActor.run { self.logIn(account) }
             } catch {
                 await MainActor.run { self.lastError = String(describing: error) }
