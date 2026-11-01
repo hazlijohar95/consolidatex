@@ -15,7 +15,8 @@ enum ClaudeUsageAPI {
 
     static func fetch(with login: Login?, at now: Date) async -> Outcome {
         guard let login else { return .failed("Not logged in") }
-        if let expiresAt = login.expiresAt, expiresAt / 1000 < now.timeIntervalSince1970 {
+        // A token that runs out during the request would come back as a 401, so one about to expire counts as expired.
+        if let expiresAt = login.expiresAt, expiresAt / 1000 < now.timeIntervalSince1970 + 60 {
             return .tokenExpired
         }
         var request = URLRequest(url: endpoint, timeoutInterval: 15)
@@ -27,7 +28,8 @@ enum ClaudeUsageAPI {
             return .failed("Usage API unreachable")
         }
         switch http.statusCode {
-        case 200: return parse(data, at: Date()).map(Outcome.reading) ?? .failed("Usage API sent a reply acc can't read")
+        case 200: return parse(data, at: now).map(Outcome.reading) ?? .failed("Usage API sent a reply acc can't read")
+        case 401: return .failed("Anthropic rejected this login; log in again")
         case 429: return .retryAfter(http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init) ?? LiveUsage.spacing)
         default: return .failed("Usage API returned HTTP \(http.statusCode)")
         }

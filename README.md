@@ -70,7 +70,7 @@ Open **Last 7 Days…** from the panel's **⋯** menu, or run `acc report`. For 
 The menu bar shows the usage of the account you're working in. Click it for the panel:
 
 - Each account shows its 5-hour usage as a bar and its other limits as percentages, with a countdown to the next reset. A limit on one model, such as "7d Fable 100%", doesn't mark the account capped, because it keeps working on other models.
-- **Next session** marks the account new sessions start on. **Most tokens left** marks the account with the most of its limits unused.
+- **Next session** marks the account new sessions start on. **Most tokens left** marks the account with the most left on the limits all its models share.
 - A yellow line warns when an account will hit a limit before it resets, at its current pace.
 - You get a notification when a capped account resets.
 - Each account shows the icons of the apps running sessions on it now, such as Rex, T3 Code or Claude desktop, with a count when there's more than one.

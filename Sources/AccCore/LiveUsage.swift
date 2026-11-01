@@ -7,8 +7,8 @@ public enum LiveUsage {
     public enum Outcome: Equatable, Sendable {
         case reading(Usage)
         case retryAfter(TimeInterval)
-        /// The login's access token ran out. The tool renews it the next time the account is used, so
-        /// the account is still logged in and its last reading stands until then.
+        /// The login's access token ran out. The tool renews it the next time the account is used, and
+        /// the last reading stands until then.
         case tokenExpired
         case failed(String)
     }

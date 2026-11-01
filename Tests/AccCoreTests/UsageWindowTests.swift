@@ -133,7 +133,7 @@ private enum Replies {
     let now = Replies.asked
     let registry = Registry(current: [.claude: "cto"], accounts: [
         Account(id: "cto", tool: .claude, label: "CTO", configDir: "~/.claude-acc4"),
-        Account(id: "qeel", tool: .claude, label: "Qeel", configDir: "~/.claude-acc6"),
+        Account(id: "qeel", tool: .claude, label: "Qeel", configDir: "~/.claude-acc3"),
     ])
 
     @Test func oneModelsWeeklyLimitLeavesTheAccountWorking() {
@@ -147,6 +147,14 @@ private enum Replies {
         let readings = ["cto": Replies.cto, "qeel": Replies.qeel]
         #expect(registry.roomiest(.claude, readings, excluding: "cto", at: now)?.id == "qeel")
         #expect(registry.autoPick(.claude, readings, detour: nil, at: now)?.id == "qeel")
+    }
+
+    @Test func oneModelUsedUpRanksAboveMostOfTheWeekGone() {
+        let three = Registry(current: [.claude: "cto"], accounts: registry.accounts + [
+            Account(id: "personal", tool: .claude, label: "Personal", configDir: "~/.claude-acc2"),
+        ])
+        let readings = ["cto": Replies.cto, "personal": Replies.personal, "qeel": Replies.qeel]
+        #expect(three.byHeadroom(.claude, readings, at: now).map(\.id) == ["qeel", "personal", "cto"])
     }
 
     @Test func theWeeklyLimitAllModelsShareStillCounts() {
@@ -166,6 +174,11 @@ private enum Replies {
     @Test func anExpiredTokenIsNotALoginFailure() async {
         let expired = ClaudeUsageAPI.Login(accessToken: "unused", expiresAt: (t0 - 60).timeIntervalSince1970 * 1000)
         #expect(await ClaudeUsageAPI.fetch(with: expired, at: t0) == .tokenExpired)
+    }
+
+    @Test func aTokenAboutToExpireCountsAsExpired() async {
+        let expiring = ClaudeUsageAPI.Login(accessToken: "unused", expiresAt: (t0 + 30).timeIntervalSince1970 * 1000)
+        #expect(await ClaudeUsageAPI.fetch(with: expiring, at: t0) == .tokenExpired)
     }
 
     @Test func noLoginIsStillAFailure() async {

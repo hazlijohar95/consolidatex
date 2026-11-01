@@ -2,7 +2,7 @@ import AccCore
 import AppKit
 import SwiftUI
 
-/// ✳︎ and the shortest window of the account being worked on, else of the first tool's current account.
+/// ✳︎ and the shortest shared window of the account being worked on, else of the first tool's current account.
 struct MenuBarLabel: View {
     @ObservedObject var model: Model
     /// Its own clock: a window that resets drops to 0% by the time alone, and nothing is published
@@ -16,7 +16,7 @@ struct MenuBarLabel: View {
             switch model.state {
             case .failed: Text("✳︎ ⚠︎")
             case .loaded:
-                if let window = account.flatMap({ model.monitor.readings[$0.id]?.windows.first }) {
+                if let window = account.flatMap({ model.monitor.readings[$0.id].flatMap { $0.sharedWindows.first ?? $0.windows.first } }) {
                     Text("✳︎ \(Int(window.used(at: now).rounded()))%")
                 } else {
                     Text("✳︎")
@@ -267,8 +267,8 @@ private struct UsageRow: View {
     @State private var editDone = false
     @FocusState private var nameFocused: Bool
 
-    /// The shortest window: the one a working session runs into first.
-    private var headline: Usage.Window? { usage?.windows.first }
+    /// The shortest shared window: the one a working session runs into first.
+    private var headline: Usage.Window? { usage.flatMap { $0.sharedWindows.first ?? $0.windows.first } }
     private var isCapped: Bool { usage?.isCapped(at: now) ?? false }
 
     var body: some View {
@@ -391,7 +391,7 @@ private struct UsageRow: View {
             Text(usage.map { "Usage as of \($0.recordedAt.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute())) · updates when this account is next used" }
                  ?? "Updates when this account is next used")
                 .font(Theme.caption).foregroundStyle(Theme.ink(0.45)).lineLimit(2)
-                .help("Still logged in. The usage check needs a current token, and Claude Code renews it when the account is used.")
+                .help("The access token expired. Claude Code renews it the next time this account is used.")
         case nil:
             EmptyView()
         }
@@ -468,7 +468,7 @@ private struct UsageRow: View {
                     .help("The next \(account.tool.spec.command) you start, in any terminal, runs on this account")
             } else if isNext {
                 Badge(text: "Most tokens left", systemImage: "arrow.up.right", tint: Theme.good, filled: false)
-                    .help("The account with the most of its usage limits still unused")
+                    .help("The account with the most left on the limits all its models share")
             }
             Spacer()
             let used = headline.map { $0.used(at: now) }
