@@ -286,7 +286,9 @@ func write(_ text: String, to path: String) {
 
         write("x\n# Claude Code account switcher\nsource ~/.config/acc/acc.zsh\ny\n", to: home + "/.zshrc")
         write("claude() { … }", to: home + "/.config/acc/acc.zsh")
+        #expect(ShellInit.hasLegacyHook(.zsh, home: home) && !ShellInit.isInstalled(.zsh, home: home))
         #expect(try ShellInit.installHook(.zsh, home: home) == .replacedLegacy)
+        #expect(!ShellInit.hasLegacyHook(.zsh, home: home))
         #expect(!FileManager.default.fileExists(atPath: home + "/.config/acc/acc.zsh"))
         #expect(try String(contentsOfFile: home + "/.zshrc", encoding: .utf8)
                 == "x\n# Claude Code account switcher\n" + #"eval "$(acc shell-init zsh)""# + "\ny\n")

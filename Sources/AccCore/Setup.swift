@@ -55,6 +55,14 @@ public enum ShellInit {
         return startupFiles(shell, home: home).contains { ((try? String(contentsOfFile: $0, encoding: .utf8)) ?? "").contains(line) }
     }
 
+    /// What the line older acc versions added (`source ~/.config/acc/acc.zsh`) contains. It routed only `claude`.
+    static let legacyHook = ".config/acc/acc.zsh"
+
+    /// Whether the hook's file still has that older line, which `installHook` replaces.
+    public static func hasLegacyHook(_ shell: Shell, home: String = userHome()) -> Bool {
+        ((try? String(contentsOfFile: shell.hook(home: home).file, encoding: .utf8)) ?? "").contains(legacyHook)
+    }
+
     /// Aliases in the startup files that send a tool's command past acc's function, which they beat,
     /// such as the Claude Code installer's `alias claude=~/.claude/local/claude`. One that starts with
     /// the command (`alias claude='claude --flag'`) reaches the function, so it isn't listed. Files the
@@ -78,15 +86,14 @@ public enum ShellInit {
 
     public enum HookResult: Equatable, Sendable { case alreadyInstalled, installed, replacedLegacy }
 
-    /// Adds the hook line to the shell's startup file, once. Replaces the line older acc
-    /// versions used (`source ~/.config/acc/acc.zsh`).
+    /// Adds the hook line to the shell's startup file, once, in place of the older line if it's there.
     @discardableResult
     public static func installHook(_ shell: Shell, home: String = userHome()) throws -> HookResult {
         if isInstalled(shell, home: home) { return .alreadyInstalled }
         let (file, line) = shell.hook(home: home)
         let existing = (try? String(contentsOfFile: file, encoding: .utf8)) ?? ""
         var lines = existing.components(separatedBy: "\n")
-        if let legacy = lines.firstIndex(where: { $0.contains(".config/acc/acc.zsh") }) {
+        if let legacy = lines.firstIndex(where: { $0.contains(legacyHook) }) {
             lines[legacy] = line
             try write(lines.joined(separator: "\n"), to: file)
             // The old wrapper only knew `claude`; nothing sources it any more.

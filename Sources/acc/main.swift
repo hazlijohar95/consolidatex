@@ -174,7 +174,8 @@ func doctor(fix: Bool) throws -> Bool {
     }
     if let shell = ShellInit.Shell.from(path: environment["SHELL"]) {
         if !ShellInit.isInstalled(shell) {
-            say("! shell     \(shell.rawValue) hook not installed, so `claude`/`codex`/`opencode` ignore acc → acc setup")
+            let why = ShellInit.hasLegacyHook(shell) ? "is the old one, so only `claude` follows acc" : "not installed, so `claude`/`codex`/`opencode` ignore acc"
+            say("! shell     \(shell.rawValue) hook \(why) → acc setup")
         }
         for alias in ShellInit.bypassingAliases(shell) {
             say("! shell     \(abbreviatingHome(alias.file)) aliases \(alias.command) to \(alias.target), which skips acc → remove the alias and put that folder on PATH")
