@@ -84,3 +84,21 @@ func append(_ text: String, to path: String) throws {
         #expect(usages.usage(for: a)?.load(at: now) == 100)
     }
 }
+
+@Suite struct CodexAppServerExits {
+    /// Writing to a Codex that stopped reading raises SIGPIPE, which would end the app.
+    @Test func aCodexThatStopsReadingIsAFailedRead() throws {
+        let home = tempHome(), stub = home + "/codex"
+        // Answers initialize only after closing its input, so the usage request meets a closed pipe.
+        write("""
+            #!/bin/sh
+            read -r line
+            exec 0<&-
+            echo '{"id":1,"result":{"userAgent":"codex/1"}}'
+            sleep 5
+            """, to: stub)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub)
+        let account = Account(id: "w", tool: .codex, label: "W", configDir: home + "/.codex-w")
+        #expect(CodexSupport.liveUsage(Runner(tool: .codex, executable: stub), account, timeout: 5) == .failed("Codex didn't answer the usage request"))
+    }
+}

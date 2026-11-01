@@ -10,6 +10,10 @@ extension CodexSupport {
         process.arguments = runner.arguments(for: account, ["app-server"])
         process.environment = runner.environment(for: account)
         let input = Pipe(), output = Pipe()
+        // Writing to a Codex that has exited would raise SIGPIPE and end the app; the write fails instead.
+        guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+            return .failed("couldn't start codex: \(String(cString: strerror(errno)))")
+        }
         process.standardInput = input
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
@@ -26,12 +30,16 @@ extension CodexSupport {
             return .failed("couldn't start codex: \(error.localizedDescription)")
         }
         let deadline = Date() + timeout
-        func send(_ messages: String...) { input.fileHandleForWriting.write(Data(messages.map { $0 + "\n" }.joined().utf8)) }
+        func send(_ messages: String...) -> Bool {
+            (try? input.fileHandleForWriting.write(contentsOf: Data(messages.map { $0 + "\n" }.joined().utf8))) != nil
+        }
 
-        send(#"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"consolidatex","title":"Consolidatex","version":"2"},"capabilities":{"experimentalApi":true}}}"#)
-        guard replies.wait(for: 1, until: deadline) != nil else { return .failed("Codex didn't start its app server") }
-        send(#"{"method":"initialized"}"#, #"{"id":2,"method":"account/rateLimits/read","params":null}"#)
-        guard let reply = replies.wait(for: 2, until: deadline) else { return .failed("Codex didn't answer the usage request") }
+        guard send(#"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"consolidatex","title":"Consolidatex","version":"2"},"capabilities":{"experimentalApi":true}}}"#),
+              replies.wait(for: 1, until: deadline) != nil
+        else { return .failed("Codex didn't start its app server") }
+        guard send(#"{"method":"initialized"}"#, #"{"id":2,"method":"account/rateLimits/read","params":null}"#),
+              let reply = replies.wait(for: 2, until: deadline)
+        else { return .failed("Codex didn't answer the usage request") }
         return outcome(ofRateLimitsReply: reply, at: Date())
     }
 
