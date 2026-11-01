@@ -99,8 +99,7 @@ final class UsageMonitor: ObservableObject {
         // Logins rarely change and Claude Code's state file can run to megabytes, so only new accounts,
         // and those `rereadIdentity` names, are read.
         let unread = registry.accounts.filter { force || !identitiesRead.contains($0.id) }
-        let unreadIDs = Set(unread.map(\.id))
-        identitiesRead.formUnion(unreadIDs)
+        identitiesRead.formUnion(unread.map(\.id))
         let logs = registry.accounts(for: .claude).map { ($0.id, self.logs[$0.id] ?? TranscriptLog(folder: $0.folder())) }
         let known = identities
         self.logs = Dictionary(uniqueKeysWithValues: logs)
@@ -135,8 +134,9 @@ final class UsageMonitor: ObservableObject {
                 if running != self.running { self.running = running }
                 if activity != self.activity { self.activity = activity }
                 if active != self.lastActive { self.lastActive = active }
-                // An account read with no login found has none now.
-                let read = self.identities.filter { !unreadIDs.contains($0.key) }.merging(identities) { $1 }
+                // A read that finds nothing keeps the last login: Claude Code rewrites its state file often,
+                // and one read caught mid-write shouldn't blank the account's email and plan.
+                let read = self.identities.merging(identities) { $1 }
                 if read != self.identities { self.identities = read }
                 self.update(readings, spent: spent, at: now)
                 self.readingLocal = false
@@ -181,8 +181,8 @@ final class UsageMonitor: ObservableObject {
 
     private func update(_ readings: [String: Usage], spent: [String: [Origin: Int]], at now: Date) {
         if readings != self.readings { self.readings = readings }
-        // A busy account with no per-model limit is never asked, its status line reporting every window,
-        // so any newer reading clears its failure.
+        // A reading written after a failed live read means the account works again (a message refreshes
+        // an expired login), so it clears the failure without waiting up to 5 minutes for the next read.
         let open = problems.filter { !$0.value.isAnswered(by: readings[$0.key]) }
         if open != problems { problems = open }
         let nowCapped = Set(readings.filter { $0.value.isCapped(at: now) }.keys)
