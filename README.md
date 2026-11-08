@@ -39,6 +39,17 @@ git clone https://github.com/hazlijohar95/consolidatex && cd consolidatex
 script/install && acc setup
 ```
 
+### Linux
+
+The `acc` command works on Linux too; the menu bar app is macOS only. You need [Swift 6](https://www.swift.org/install/linux/) and zsh to build it:
+
+```
+git clone https://github.com/hazlijohar95/consolidatex && cd consolidatex
+script/install && acc setup
+```
+
+`script/install` links Swift's runtime into `acc`, so it keeps working if you update or remove Swift. Running sessions show the app they run in when your desktop starts apps in their own systemd units, as Omarchy (uwsm), GNOME and KDE do.
+
 ## Pick an account
 
 Click an account in the menu bar panel, or run `acc <name>`. The next `claude`, `codex` or `opencode` you start, in any terminal, runs on that account. Sessions that are already running keep theirs.
@@ -131,6 +142,7 @@ Kiro CLI isn't supported. It keeps its login in one database that no setting can
 
 ```
 script/test       # unit tests, then end-to-end tests with stub tools in a throwaway HOME
+script/linux      # the same tests in a Linux container (needs Docker)
 script/install    # build and install the app and the CLI from source
 ```
 

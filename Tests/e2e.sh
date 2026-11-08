@@ -161,6 +161,8 @@ mkdir -p $H/.claude-cto/projects/$slug/s-old
 print old > $H/.claude-cto/projects/$slug/s-old.jsonl; touch -t 202601010000 $H/.claude-cto/projects/$slug/s-old.jsonl
 print new > $H/.claude-cto/projects/$slug/s-new.jsonl
 check 'continue resumes newest on named'  "$(cd $proj && acc continue haz-team 2>/dev/null)" 'CFG=<unset> ARGS=--resume s-new'
+check 'continue sends a prompt'           "$(cd $proj && acc continue haz-team --prompt 'Keep going' 2>/dev/null)" 'CFG=<unset> ARGS=--resume s-new Keep going'
+check 'continue refuses a prompt like a flag' "$(cd $proj && acc continue haz-team --prompt '-v broke' 2>&1)" 'acc: --prompt can'"'"'t start with "-"'
 check 'continue copied the transcript'    "$(cat $H/.claude/projects/$slug/s-new.jsonl)" new
 check 'continue explains itself'          "$(cd $proj && acc continue haz-team 2>&1 >/dev/null)" 'acc: ↪ continuing s-new (last active 1m ago on haz-team) on haz-team'
 check 'continue copies the sidecar folder' "$(cd $proj && acc continue haz-team --session s-old >/dev/null 2>&1; [[ -d $H/.claude/projects/$slug/s-old ]] && echo yes)" yes

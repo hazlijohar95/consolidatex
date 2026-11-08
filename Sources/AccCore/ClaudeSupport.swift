@@ -116,27 +116,34 @@ public enum ClaudeSupport {
         }
     }
 
-    /// The account's most recently written transcript, and the folder it ran in from its last lines.
-    static func latestConversation(_ account: Account, home: String) -> Sessions.Conversation? {
+    /// The `limit` transcripts written most recently since `since`, newest first, each with the folder
+    /// it ran in. One that can't be read is left out rather than replaced by an older one.
+    static func recentConversations(_ account: Account, home: String, since: Date, limit: Int) -> [Sessions.Conversation] {
         let fm = FileManager.default
         let projects = URL(fileURLWithPath: account.folder(home: home) + "/projects")
         let modified = { (url: URL) in (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast }
-        let newest = ((try? fm.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil)) ?? [])
+        let transcripts = ((try? fm.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil)) ?? [])
             .flatMap { (try? fm.contentsOfDirectory(at: $0, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] }
             .filter { $0.pathExtension == "jsonl" }
-            .max { modified($0) < modified($1) }
+            .map { (url: $0, modified: modified($0)) }
+            .filter { $0.modified >= since }
+            .sorted { $0.modified > $1.modified }
+        return transcripts.prefix(limit).compactMap { conversation(in: $0.url) }
+    }
+
+    /// The conversation id and the folder it started in.
+    static func conversation(in transcript: URL) -> Sessions.Conversation? {
         struct Line: Decodable { let cwd: String? }
         // Claude Code files a transcript under the folder the session started in, and `acc continue`
         // looks there. Later lines can record another folder after a `cd`, so the one whose slug
         // names the transcript's own folder is the right one.
-        guard let newest else { return nil }
-        let filedUnder = newest.deletingLastPathComponent().lastPathComponent
-        let lines = CodexSupport.headLines(of: newest, bytes: 64 * 1024) + CodexSupport.tailLines(of: newest, bytes: 256 * 1024).reversed()
+        let filedUnder = transcript.deletingLastPathComponent().lastPathComponent
+        let lines = CodexSupport.headLines(of: transcript, bytes: 64 * 1024) + CodexSupport.tailLines(of: transcript, bytes: 256 * 1024).reversed()
         guard let folder = lines.lazy.filter({ $0.contains(#""cwd""#) })
                 .compactMap({ try? JSONDecoder().decode(Line.self, from: Data($0.utf8)).cwd })
                 .first(where: { projectSlug(for: $0) == filedUnder })
         else { return nil }
-        return Sessions.Conversation(id: newest.deletingPathExtension().lastPathComponent, folder: folder)
+        return Sessions.Conversation(id: transcript.deletingPathExtension().lastPathComponent, folder: folder)
     }
 
     /// Copies the transcript and its sidecar folder (subagent transcripts) into the same project folder of `account`.

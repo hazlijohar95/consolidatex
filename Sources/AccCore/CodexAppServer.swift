@@ -10,10 +10,12 @@ extension CodexSupport {
         process.arguments = runner.arguments(for: account, ["app-server"])
         process.environment = runner.environment(for: account)
         let input = Pipe(), output = Pipe()
+        #if canImport(Darwin)
         // Writing to a Codex that has exited would raise SIGPIPE and end the app; the write fails instead.
         guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
             return .failed("couldn't start codex: \(String(cString: strerror(errno)))")
         }
+        #endif
         process.standardInput = input
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
@@ -25,13 +27,18 @@ extension CodexSupport {
         }
         do {
             try runner.prepare(account)
-            try process.run()
+            try process.start()
         } catch {
             return .failed("couldn't start codex: \(error.localizedDescription)")
         }
         let deadline = Date() + timeout
         func send(_ messages: String...) -> Bool {
-            (try? input.fileHandleForWriting.write(contentsOf: Data(messages.map { $0 + "\n" }.joined().utf8))) != nil
+            let data = Data(messages.map { $0 + "\n" }.joined().utf8)
+            #if canImport(Darwin)
+            return (try? input.fileHandleForWriting.write(contentsOf: data)) != nil
+            #else
+            return withSIGPIPEBlocked { (try? input.fileHandleForWriting.write(contentsOf: data)) != nil }
+            #endif
         }
 
         guard send(#"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"consolidatex","title":"Consolidatex","version":"2"},"capabilities":{"experimentalApi":true}}}"#),
@@ -88,3 +95,21 @@ private final class Replies: @unchecked Sendable {
         return byID[id]
     }
 }
+
+#if !canImport(Darwin)
+/// Linux has no per-descriptor F_SETNOSIGPIPE. With SIGPIPE blocked on this thread, a write to a
+/// Codex that has exited fails with EPIPE and leaves the signal pending, which is taken off before
+/// unblocking, so it never ends the process.
+private func withSIGPIPEBlocked<Result>(_ body: () -> Result) -> Result {
+    var pipe = sigset_t(), previous = sigset_t()
+    sigemptyset(&pipe)
+    sigaddset(&pipe, SIGPIPE)
+    pthread_sigmask(SIG_BLOCK, &pipe, &previous)
+    defer {
+        var now = timespec()
+        while sigtimedwait(&pipe, nil, &now) == SIGPIPE {}
+        pthread_sigmask(SIG_SETMASK, &previous, nil)
+    }
+    return body()
+}
+#endif

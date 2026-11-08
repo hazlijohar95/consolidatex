@@ -8,8 +8,9 @@ final class FloatingPanel {
     private var panel: NSPanel?
     private var resign: NSObjectProtocol?
 
-    /// Shows what `content` makes, given a way to close it, or closes it if it's showing.
-    func toggle<Content: View>(_ content: (_ close: @escaping () -> Void) -> Content) {
+    /// Shows what `content` makes, given a way to close it, or closes it if it's showing. Without
+    /// `focusFirst`, nothing has keyboard focus until Tab, so no focus ring shows on opening.
+    func toggle<Content: View>(focusFirst: Bool = true, _ content: (_ close: @escaping () -> Void) -> Content) {
         if panel?.isVisible == true { return close() }
         let panel = KeyPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         panel.isOpaque = false
@@ -24,6 +25,7 @@ final class FloatingPanel {
         panel.center()
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+        if !focusFirst { panel.makeFirstResponder(nil) }
         resign = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.close() }
         }

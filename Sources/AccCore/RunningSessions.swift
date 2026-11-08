@@ -1,19 +1,20 @@
-import Darwin
 import Foundation
 
-/// A session of a tool running on this Mac now: the account it uses and the app that started it.
+/// A session of a tool running on this computer now: the account it uses and the app that started it.
 public struct RunningSession: Equatable, Sendable {
     public let pid: Int32
     public let accountID: String
     public let launcher: Launcher
 }
 
-/// The app a session belongs to: the app bundle highest among the process's ancestors, closest to
-/// launchd. That is the app a person works in. A helper inside it, or a tool's own bundle further
-/// down the chain (Claude desktop runs Claude Code from a claude.app of its own), reads as that app.
+/// The app a session belongs to, the one a person works in. On macOS it's the app bundle highest
+/// among the process's ancestors, closest to launchd, so a helper inside it, or a tool's own bundle
+/// further down the chain (Claude desktop runs Claude Code from a claude.app of its own), reads as
+/// that app. On Linux it's the desktop app whose systemd unit the session runs in.
 public struct Launcher: Hashable, Sendable {
     public let name: String
-    /// The app's bundle, for its icon. Nil when no app started the session (a detached tmux, ssh).
+    /// The app's bundle path on macOS, its desktop app ID on Linux, for its icon. Nil when no app
+    /// started the session (a detached tmux, ssh).
     public let bundle: String?
 
     public static let background = Launcher(name: "Background", bundle: nil)
@@ -25,10 +26,10 @@ public struct AppCount: Equatable, Sendable {
     public let count: Int
 }
 
-/// Reads the process table for sessions of the registry's tools. The kernel lists only this user's
-/// processes, and each costs one 64-byte record. Only tool processes have their arguments and
-/// environment read, into one reused buffer, and only the variables their `ToolSpec` names become
-/// strings; everything else there, login tokens included, is compared as bytes and dropped.
+/// Reads the process table (`ProcessTable`, one per platform) for sessions of the registry's tools.
+/// Only tool processes have their arguments and environment read, into one reused buffer, and only
+/// the variables their `ToolSpec` names become strings; everything else there, login tokens
+/// included, is compared as bytes and dropped.
 public enum RunningSessions {
     /// Apps whose bundle ids differ from what people call them. Past transcripts name the same apps
     /// by `Origin`, so the names are shared.
@@ -46,7 +47,7 @@ public enum RunningSessions {
         let folders = registry.accounts.reduce(into: [Tool: [String?: String]]()) { map, account in
             map[account.tool, default: [:]][account.resolvedConfigDir(home: home).map(canonical)] = account.id
         }
-        var arguments = ArgumentBuffer()
+        var arguments = ProcessTable.ArgumentReader()
         var accountByLogin: [Identity.Login: String]?
         let ourselves = getpid()
         return processes.compactMap { pid, process in
@@ -71,7 +72,7 @@ public enum RunningSessions {
             let parents = ancestors(of: pid)
             // What this process started, such as the app's own `codex app-server`, is nobody's session.
             guard !parents.contains(ourselves) else { return nil }
-            return RunningSession(pid: pid, accountID: accountID, launcher: launcher(among: parents))
+            return RunningSession(pid: pid, accountID: accountID, launcher: ProcessTable.launcher(of: pid, parents: parents))
         }
         .sorted { $0.pid < $1.pid }
     }
@@ -99,117 +100,57 @@ public enum RunningSessions {
 
     /// This user's processes that are a tool, by pid.
     static func toolProcesses(_ specs: [ToolSpec]) -> [pid_t: ToolProcess] {
-        let uid = UInt32(getuid())
-        let size = proc_listpids(UInt32(PROC_UID_ONLY), uid, nil, 0)
-        guard size > 0 else { return [:] }
-        var pids = [pid_t](repeating: 0, count: Int(size) / MemoryLayout<pid_t>.size + 32)
-        let listed = Int(proc_listpids(UInt32(PROC_UID_ONLY), uid, &pids, Int32(pids.count * MemoryLayout<pid_t>.size))) / MemoryLayout<pid_t>.size
         let names = specs.flatMap { spec in spec.processNames.map { (tool: spec.tool, bytes: Array($0.utf8)) } }
         var found: [pid_t: ToolProcess] = [:]
-        for pid in pids.prefix(max(listed, 0)) where pid > 0 {
-            guard let info = shortInfo(pid) else { continue }
-            var tool = withUnsafeBytes(of: info.pbsi_comm) { raw in
-                let comm = raw.prefix { $0 != 0 }
-                return names.first { comm.elementsEqual($0.bytes) }?.tool
-            }
+        ProcessTable.forEachUserProcess { pid, parent, name in
+            var tool = names.first { name.elementsEqual($0.bytes) }?.tool
             // An install that runs a file named for its version, such as Claude Code's 2.1.314, is known by its folder.
-            if tool == nil, withUnsafeBytes(of: info.pbsi_comm, { isVersion($0.prefix { $0 != 0 }) }), let path = executablePath(pid) {
+            if tool == nil, isVersion(name), let path = ProcessTable.executablePath(pid) {
                 tool = specs.first { $0.versionedInstallDir.map(path.contains) ?? false }?.tool
             }
-            if let tool { found[pid] = ToolProcess(tool: tool, parent: pid_t(info.pbsi_ppid)) }
+            if let tool { found[pid] = ToolProcess(tool: tool, parent: parent) }
         }
         return found
     }
 
-    static func isVersion(_ name: UnsafeRawBufferPointer.SubSequence) -> Bool {
+    static func isVersion(_ name: some Collection<UInt8>) -> Bool {
         !name.isEmpty && name.allSatisfy { $0 == UInt8(ascii: ".") || (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) }
     }
 
-    /// `pid`'s parents, nearest first, up to but not including launchd.
+    /// `pid`'s parents, nearest first, up to but not including the first process (launchd, init).
     static func ancestors(of pid: pid_t) -> [pid_t] {
         var parents: [pid_t] = []
         var current = pid
         for _ in 0..<16 {
-            guard let parent = shortInfo(current).map({ pid_t($0.pbsi_ppid) }), parent > 1 else { break }
+            guard let parent = ProcessTable.parent(of: current), parent > 1 else { break }
             parents.append(parent)
             current = parent
         }
         return parents
     }
 
-    /// The highest app bundle among a process's parents.
-    static func launcher(among parents: [pid_t]) -> Launcher {
-        let highest = parents.compactMap { executablePath($0).flatMap(AppInstall.appBundle(around:)) }.last
-        return highest.map { Launcher(name: appNames.name(of: $0), bundle: $0) } ?? .background
-    }
-
-    private static let appNames = AppNames()
-
-    /// Bundle path to display name, read once per app from its Info.plist alone. `Bundle(path:)`
-    /// would keep each app's bundle object, and its whole parsed Info.plist, for good.
-    private final class AppNames: @unchecked Sendable {
+    /// App names by bundle path or app ID, worked out once per app.
+    final class AppNames: @unchecked Sendable {
         private let lock = NSLock()
         private var names: [String: String] = [:]
+        private let lookUp: @Sendable (String) -> String
 
-        func name(of bundle: String) -> String {
+        init(_ lookUp: @escaping @Sendable (String) -> String) { self.lookUp = lookUp }
+
+        func name(of app: String) -> String {
             lock.withLock {
-                if let name = names[bundle] { return name }
-                let info = (try? Data(contentsOf: URL(fileURLWithPath: bundle + "/Contents/Info.plist")))
-                    .flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any] }
-                let id = info?["CFBundleIdentifier"] as? String
-                let name = knownApps.first { id?.hasPrefix($0.idPrefix) == true }?.name
-                    ?? info?["CFBundleDisplayName"] as? String ?? info?["CFBundleName"] as? String
-                    ?? URL(fileURLWithPath: bundle).deletingPathExtension().lastPathComponent
-                names[bundle] = name
+                if let name = names[app] { return name }
+                let name = lookUp(app)
+                names[app] = name
                 return name
             }
         }
-    }
-
-    private static func executablePath(_ pid: pid_t) -> String? {
-        withUnsafeTemporaryAllocation(of: UInt8.self, capacity: Int(MAXPATHLEN)) { buffer in
-            let length = Int(proc_pidpath(pid, buffer.baseAddress, UInt32(buffer.count)))
-            return length > 0 ? String(decoding: buffer.prefix(length), as: UTF8.self) : nil
-        }
-    }
-
-    /// The short record, which `ps` also reads: unlike the full one, it's there for processes of
-    /// other users too, such as the root-owned `login` between a terminal app and its shell.
-    private static func shortInfo(_ pid: pid_t) -> proc_bsdshortinfo? {
-        var info = proc_bsdshortinfo()
-        let size = Int32(MemoryLayout<proc_bsdshortinfo>.size)
-        return proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, &info, size) == size ? info : nil
     }
 
     struct Facts: Equatable {
         var variables: [String: String] = [:]
         /// The process runs with one of the flags asked about.
         var flagged = false
-    }
-
-    /// One buffer for every process's arguments and environment in a scan. Sessions measured 1 to 10 KB,
-    /// so it starts at 32 KB. The kernel cuts the data to fit without saying so, so a buffer that comes
-    /// back full is read again at the kernel's limit (`kern.argmax`, 1 MB); a larger buffer is refused.
-    struct ArgumentBuffer {
-        private var bytes = [UInt8](repeating: 0, count: 32 * 1024)
-
-        mutating func facts(of pid: pid_t, variables: [String], flags: [String]) -> Facts? {
-            var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
-            var size = bytes.count
-            guard sysctl(&mib, 3, &bytes, &size, nil, 0) == 0 else { return nil }
-            if size == bytes.count, bytes.count < Self.limit {
-                bytes = [UInt8](repeating: 0, count: Self.limit)
-                size = bytes.count
-                guard sysctl(&mib, 3, &bytes, &size, nil, 0) == 0 else { return nil }
-            }
-            return bytes.withUnsafeBytes { RunningSessions.facts(fromProcArgs: UnsafeRawBufferPointer(rebasing: $0.prefix(size)), variables: variables, flags: flags) }
-        }
-
-        static let limit: Int = {
-            var argmax: Int32 = 0
-            var length = MemoryLayout<Int32>.size
-            return sysctlbyname("kern.argmax", &argmax, &length, nil, 0) == 0 ? Int(argmax) : 256 * 1024
-        }()
     }
 
     /// KERN_PROCARGS2 is argc, the executable path, NUL padding, then argc arguments and the
@@ -242,5 +183,86 @@ public enum RunningSessions {
             }
         }
         return facts
+    }
+
+    /// Linux keeps a process's arguments in /proc/<pid>/cmdline and its `NAME=value` environment in
+    /// /proc/<pid>/environ, each string ending in one NUL. Only the arguments and variables asked
+    /// about are looked at.
+    static func facts(cmdline: UnsafeRawBufferPointer, environ: UnsafeRawBufferPointer, variables: [String], flags: [String] = []) -> Facts {
+        var facts = Facts()
+        let flagBytes = flags.map { Array($0.utf8) }
+        for argument in cmdline.split(separator: 0, omittingEmptySubsequences: false)
+        where flagBytes.contains(where: { argument.elementsEqual($0) }) {
+            facts.flagged = true
+        }
+        let wanted = variables.map { (name: $0, prefix: Array("\($0)=".utf8)) }
+        for entry in environ.split(separator: 0) {
+            for variable in wanted where entry.starts(with: variable.prefix) {
+                facts.variables[variable.name] = String(decoding: entry.dropFirst(variable.prefix.count), as: UTF8.self)
+            }
+        }
+        return facts
+    }
+
+    /// The desktop app ID in a /proc/<pid>/cgroup, from the unit a desktop session starts each app in,
+    /// per systemd's desktop environment conventions, which uwsm, GNOME and KDE follow:
+    /// `app[-<launcher>]-<app id>[@<random>].service` or `app[-<launcher>]-<app id>-<random>.scope`.
+    /// The launcher and app ID write their own dashes as `\x2d`. The innermost such unit is the app.
+    /// Terminals that start each tab in a scope of their own, as GNOME's VTE terminals do, put those
+    /// in an `app-<app id>.slice`, which names the app when no unit does.
+    static func appID(fromCgroup cgroup: String) -> String? {
+        let parts = cgroup.split { $0 == "/" || $0 == "\n" }
+        if let slice = parts.last(where: { $0.hasPrefix("app-") && $0.hasSuffix(".slice") && $0 != "app-graphical.slice" }),
+           !parts.contains(where: { $0.hasPrefix("app-") && ($0.hasSuffix(".service") || $0.hasSuffix(".scope")) }) {
+            let id = unescapingUnitName(slice.dropFirst("app-".count).dropLast(".slice".count))
+            return id.isEmpty ? nil : id
+        }
+        let unit = parts.last { $0.hasPrefix("app-") && ($0.hasSuffix(".service") || $0.hasSuffix(".scope")) }
+        guard var name = unit.map({ String($0.dropFirst("app-".count)) }) else { return nil }
+        if name.hasSuffix(".service") {
+            name = String(name.dropLast(".service".count).prefix { $0 != "@" })
+        } else {
+            name = String(name.dropLast(".scope".count))
+            guard let random = name.lastIndex(of: "-") else { return nil }
+            name = String(name[..<random])
+        }
+        // A launcher, then the ID. A unit that left a dash in its ID unescaped keeps it.
+        let words = name.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+        let id = unescapingUnitName(words.count == 2 ? words[1] : words[0])
+        return id.isEmpty ? nil : id
+    }
+
+    /// systemd's `\xNN` escapes in a unit name, decoded.
+    static func unescapingUnitName(_ name: Substring) -> String {
+        var bytes: [UInt8] = []
+        var rest = name.utf8
+        while let byte = rest.first {
+            let hex = rest.dropFirst(2).prefix(2)
+            if byte == UInt8(ascii: "\\"), rest.dropFirst().first == UInt8(ascii: "x"), hex.count == 2,
+               let value = UInt8(String(decoding: hex, as: UTF8.self), radix: 16) {
+                bytes.append(value)
+                rest = rest.dropFirst(4)
+            } else {
+                bytes.append(byte)
+                rest = rest.dropFirst()
+            }
+        }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    /// The `Name` in a desktop entry's `[Desktop Entry]` group; translations (`Name[de]=`) aren't it.
+    /// Space around the `=` doesn't count, as the spec says.
+    static func desktopEntryName(_ contents: String) -> String? {
+        var inEntry = false
+        for line in contents.split(whereSeparator: \.isNewline) {
+            let line = line.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") {
+                inEntry = line == "[Desktop Entry]"
+            } else if inEntry, let equals = line.firstIndex(of: "="),
+                      line[..<equals].trimmingCharacters(in: .whitespaces) == "Name" {
+                return line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
     }
 }

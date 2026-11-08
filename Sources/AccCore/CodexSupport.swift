@@ -136,11 +136,15 @@ public enum CodexSupport {
         }
     }
 
-    /// The rollout written most recently. Names sort by start time, so a long session started
-    /// yesterday can still be the live one; the newest ten by name are compared by write time.
-    static func latestConversation(_ account: Account, home: String) -> Sessions.Conversation? {
-        let modified = { (url: URL) in modificationDate(url.path) ?? .distantPast }
-        return rollouts(home: account.folder(home: home), limit: 10).max { modified($0) < modified($1) }.flatMap(conversation(in:))
+    /// The `limit` rollouts written most recently since `since`, newest first. Names sort by start time,
+    /// so a long session started yesterday can still be the live one; the newest ten by name, or `limit`
+    /// if more, are compared by write time. One that can't be read is left out, not replaced.
+    static func recentConversations(_ account: Account, home: String, since: Date, limit: Int) -> [Sessions.Conversation] {
+        let rollouts = rollouts(home: account.folder(home: home), limit: max(10, limit))
+            .map { (url: $0, modified: modificationDate($0.path) ?? .distantPast) }
+            .filter { $0.modified >= since }
+            .sorted { $0.modified > $1.modified }
+        return rollouts.prefix(limit).compactMap { conversation(in: $0.url) }
     }
 
     /// The conversation id and folder from the session_meta line at the top of a rollout.

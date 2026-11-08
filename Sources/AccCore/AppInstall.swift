@@ -27,7 +27,8 @@ public enum AppInstall {
     }
 
     public static func version(of app: String) -> String? {
-        NSDictionary(contentsOfFile: app + "/Contents/Info.plist")?["CFBundleShortVersionString"] as? String
+        (try? Data(contentsOf: URL(fileURLWithPath: app + "/Contents/Info.plist")))
+            .flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any] }?["CFBundleShortVersionString"] as? String
     }
 
     public static func status(executable: String, home: String = userHome()) -> Status {

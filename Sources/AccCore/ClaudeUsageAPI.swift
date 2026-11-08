@@ -1,5 +1,10 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#endif
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Anthropic's endpoint behind Claude Code's /usage, read with each account's own Claude Code login.
 /// Unlike the status line it covers idle accounts and per-model weekly limits. It is undocumented, and
@@ -64,20 +69,32 @@ enum ClaudeUsageAPI {
         let expiresAt: Double?
     }
 
-    /// Through /usr/bin/security, so a keychain prompt, if any, names a system tool rather than acc.
+    /// What Claude Code stores for a login, in the keychain or in its credentials file.
+    private struct Stored: Decodable { let claudeAiOauth: Login }
+
+    /// From the keychain on macOS. Where there is none, or Claude Code couldn't use it, Claude Code
+    /// keeps the login in `.credentials.json` in its config folder.
     static func login(for account: Account, home: String) -> Login? {
-        struct Item: Decodable { let claudeAiOauth: Login }
+        #if os(macOS)
+        if let login = keychainLogin(for: account, home: home) { return login }
+        #endif
+        let file = URL(fileURLWithPath: account.folder(home: home) + "/.credentials.json")
+        return (try? JSONDecoder().decode(Stored.self, from: Data(contentsOf: file)))?.claudeAiOauth
+    }
+
+    #if os(macOS)
+    /// Through /usr/bin/security, so a keychain prompt, if any, names a system tool rather than acc.
+    private static func keychainLogin(for account: Account, home: String) -> Login? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         process.arguments = ["find-generic-password", "-s", keychainService(for: account, home: home), "-w"]
         let out = Pipe()
         process.standardOutput = out
         process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return nil }
+        guard (try? process.start()) != nil else { return nil }
         let data = out.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-        return (try? JSONDecoder().decode(Item.self, from: data))?.claudeAiOauth
+        guard process.waitForExit() == 0 else { return nil }
+        return (try? JSONDecoder().decode(Stored.self, from: data))?.claudeAiOauth
     }
 
     /// Claude Code names a login's keychain item after a hash of CLAUDE_CONFIG_DIR; the default login's has no suffix.
@@ -86,6 +103,7 @@ enum ClaudeUsageAPI {
         let hash = SHA256.hash(data: Data(dir.utf8)).map { String(format: "%02x", $0) }.joined()
         return "Claude Code-credentials-" + hash.prefix(8)
     }
+    #endif
 }
 
 extension Date {

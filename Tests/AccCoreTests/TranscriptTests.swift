@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 import Testing
 @testable import AccCore
@@ -13,19 +12,19 @@ func append(_ text: String, to path: String) throws {
 /// A program named `name` that sleeps for its first argument's seconds, so the process table lists it
 /// under that name. It's compiled rather than copied from /bin/sleep: on macOS 26 and later that
 /// binary is arm64e only, and macOS 15 kills an arm64e binary that isn't Apple's as soon as it starts.
+/// Every Swift toolchain ships clang, where `cc` may be missing.
 func fakeTool(_ name: String, in home: String) throws -> String {
     let fake = home + "/bin/" + name
     try FileManager.default.createDirectory(atPath: home + "/bin", withIntermediateDirectories: true)
     let cc = Process()
-    cc.executableURL = URL(fileURLWithPath: "/usr/bin/cc")
-    cc.arguments = ["-x", "c", "-", "-o", fake]
+    cc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    cc.arguments = ["clang", "-x", "c", "-", "-o", fake]
     let source = Pipe()
     cc.standardInput = source
-    try cc.run()
+    try cc.start()
     try source.fileHandleForWriting.write(contentsOf: Data("#include <stdlib.h>\n#include <unistd.h>\nint main(int c, char **v) { sleep(c > 1 ? atoi(v[1]) : 30); return 0; }\n".utf8))
     try source.fileHandleForWriting.close()
-    cc.waitUntilExit()
-    try #require(cc.terminationStatus == 0)
+    try #require(cc.waitForExit() == 0)
     return fake
 }
 
@@ -38,10 +37,10 @@ func start(_ executable: String, _ arguments: [String], environment: [String: St
     shell.environment = environment
     let output = Pipe()
     shell.standardOutput = output
-    try shell.run()
+    try shell.start()
     let printed = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
     let pid = try #require(pid_t(printed.trimmingCharacters(in: .whitespacesAndNewlines)))
-    if detached { shell.waitUntilExit() }
+    if detached { _ = shell.waitForExit() }
     // The shell forks first, so the new process runs as the shell until it execs.
     let name = Array(URL(fileURLWithPath: executable).lastPathComponent.utf8)
     let deadline = Date() + 5
@@ -50,9 +49,14 @@ func start(_ executable: String, _ arguments: [String], environment: [String: St
 }
 
 private func processName(_ pid: pid_t) -> [UInt8] {
+    #if canImport(Darwin)
     var buffer = [UInt8](repeating: 0, count: 64)
     let length = proc_name(pid, &buffer, UInt32(buffer.count))
     return Array(buffer.prefix(Int(max(length, 0))))
+    #else
+    let comm = FileHandle(forReadingAtPath: "/proc/\(pid)/comm")?.readDataToEndOfFile() ?? Data()
+    return Array(comm.prefix { $0 != UInt8(ascii: "\n") })
+    #endif
 }
 
 /// `acc continue` copies a conversation into another account's folder. What came with the copy is
@@ -158,6 +162,31 @@ private func processName(_ pid: pid_t) -> [UInt8] {
 }
 
 @Suite struct OwnProcesses {
+    /// A tool that leaves something running, as a login leaves the browser it opened, has still exited.
+    @Test func waitingEndsWhenTheToolExitsNotWhatItLeftRunning() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "sleep 30 >/dev/null 2>&1 & exit 3"]
+        let began = Date()
+        try process.start()
+        #expect(process.waitForExit() == 3)
+        #expect(Date().timeIntervalSince(began) < 10)
+    }
+
+    #if os(Linux)
+    /// Tests run on Swift concurrency threads, which block nearly every signal; what acc starts must not inherit that.
+    @Test func aToolStartsWithNoSignalsBlocked() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/grep")
+        process.arguments = ["SigBlk", "/proc/self/status"]
+        let output = Pipe()
+        process.standardOutput = output
+        try process.start()
+        _ = process.waitForExit()
+        #expect(String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) == "SigBlk:\t0000000000000000\n")
+    }
+    #endif
+
     /// The app's own `codex app-server`, started to read usage, is nobody's session.
     @Test func aToolThisProcessStartedIsNoSession() throws {
         let home = tempHome(), fake = try fakeTool("codex", in: home)
@@ -170,7 +199,7 @@ private func processName(_ pid: pid_t) -> [UInt8] {
         probe.executableURL = URL(fileURLWithPath: fake)
         probe.arguments = ["30"]
         probe.environment = environment("probe")
-        try probe.run()
+        try probe.start()
         // Started through a launcher that stays its parent, as npm's codex does on a Node without execve.
         let wrapped = try start(fake, ["30"], environment: environment("wrapped"), detached: false)
         let session = try start(fake, ["30"], environment: environment("session"))

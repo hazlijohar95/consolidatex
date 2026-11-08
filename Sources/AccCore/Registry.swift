@@ -204,10 +204,21 @@ extension Date {
     }
 }
 
+extension stat {
+    /// When the file was last written. Darwin and Linux name the field differently.
+    var modified: Date {
+        #if canImport(Darwin)
+        Date(st_mtimespec)
+        #else
+        Date(st_mtim)
+        #endif
+    }
+}
+
 /// When the file at `path` was last written, or nil when it can't be read.
 func modificationDate(_ path: String) -> Date? {
     var info = stat()
-    return stat(path, &info) == 0 ? Date(info.st_mtimespec) : nil
+    return stat(path, &info) == 0 ? info.modified : nil
 }
 
 /// `path` with the home folder written as "~", for showing to people.

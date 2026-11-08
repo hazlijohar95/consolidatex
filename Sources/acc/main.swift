@@ -13,9 +13,9 @@ let usage = """
       acc ls [<tool>] [--json]   list accounts with last-seen usage (● = current)
       acc auto [<tool>]          switch to the account with the most quota left
       acc report                 the last 7 days: weekly use and hours capped, per account
-      acc continue [<account>] [--session <id>]
+      acc continue [<account>] [--session <id>] [--prompt <text>]
                                  resume this folder's latest conversation on another account
-                                 (default: the roomiest); Claude Code and Codex
+                                 (default: the roomiest), sending <text> first; Claude Code and Codex
       acc run <account> [--] [args]
                                  run the account's tool once on it, without switching
       acc add <tool> [<name>] [--id <id>] [--dir <folder>]
@@ -115,12 +115,11 @@ func pick(_ registry: Registry, tool: Tool?) throws -> String? {
     let input = Pipe(), output = Pipe()
     process.standardInput = input
     process.standardOutput = output
-    try process.run()
+    try process.start()
     input.fileHandleForWriting.write(Data(lines.joined(separator: "\n").utf8))
     try input.fileHandleForWriting.close()
     let chosen = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else { return nil }
+    guard process.waitForExit() == 0 else { return nil }
     return chosen.split(separator: "\t").first.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
 }
 
@@ -230,7 +229,7 @@ func launch(_ tool: Tool, _ arguments: [String]) throws -> Never {
     throw runner.exec(account: registry.current(for: tool), arguments: args)
 }
 
-func continueSession(_ ref: String?, sessionID: String?) throws -> Never {
+func continueSession(_ ref: String?, sessionID: String?, prompt: String?) throws -> Never {
     let registry = try store.load()
     let cwd = FileManager.default.currentDirectoryPath
     let named = try ref.map { try registry.resolve($0) }
@@ -249,7 +248,7 @@ func continueSession(_ ref: String?, sessionID: String?) throws -> Never {
     if target.id != session.account.id { try Sessions.copy(session, to: target) }
     let age = UsageFormat.relative(Date(), from: session.modified).replacingOccurrences(of: "in ", with: "")
     warn("↪ continuing \(session.id.prefix(8)) (last active \(age) ago on \(session.account.id)) on \(target.id)")
-    throw try Runner.locate(tool).exec(account: target, arguments: Sessions.resumeArguments(session))
+    throw try Runner.locate(tool).exec(account: target, arguments: Sessions.resumeArguments(session) + (prompt.map { [$0] } ?? []))
 }
 
 /// The last 7 days per account, from the history the menu bar app records while it runs.
@@ -290,8 +289,8 @@ func runCommand(_ path: String, _ arguments: [String]) {
     process.executableURL = URL(fileURLWithPath: path)
     process.arguments = arguments
     process.standardError = FileHandle.nullDevice
-    try? process.run()
-    process.waitUntilExit()
+    guard (try? process.start()) != nil else { return }
+    _ = process.waitForExit()
 }
 
 func appStatus() -> AppInstall.Status {
@@ -444,7 +443,10 @@ func main() throws {
 
     case "continue":
         let session = try option("--session", in: &args)
-        try continueSession(args.first, sessionID: session)
+        let prompt = try option("--prompt", in: &args)
+        // The tool would read a prompt starting with "-" as one of its own options.
+        if prompt?.hasPrefix("-") == true { throw AccError.usage("--prompt can't start with \"-\"") }
+        try continueSession(args.first, sessionID: session, prompt: prompt)
 
     case "launch":
         guard let name = args.first, let t = tool(named: name) else { throw AccError.usage("usage: acc launch <tool> [--] [args]") }
@@ -552,12 +554,15 @@ func main() throws {
         statusLine()
 
     case "ui":
+        #if os(macOS)
         let open = Process()
         open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         open.arguments = ["consolidatex://manage"]
-        try open.run()
-        open.waitUntilExit()
-        if open.terminationStatus != 0 { throw AccError.system("could not open Consolidatex; is the app installed?") }
+        try open.start()
+        if open.waitForExit() != 0 { throw AccError.system("could not open Consolidatex; is the app installed?") }
+        #else
+        throw AccError.usage("the Consolidatex app is macOS only")
+        #endif
 
     case "version", "--version":
         say("acc \(version)")

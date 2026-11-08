@@ -1,4 +1,7 @@
 import Foundation
+#if os(Linux)
+import CXattr
+#endif
 
 /// A conversation transcript in one account's folder.
 public struct Session: Equatable, Sendable {
@@ -26,10 +29,16 @@ public enum Sessions {
 
     /// The account's most recent conversation, to move elsewhere when the account runs out.
     public static func latest(_ account: Account, home: String = userHome()) -> Conversation? {
+        recent(account, since: .distantPast, limit: 1, home: home).first
+    }
+
+    /// Up to `limit` of the account's conversations written to since `since`, newest first: the ones
+    /// still going when the account ran out.
+    public static func recent(_ account: Account, since: Date, limit: Int, home: String = userHome()) -> [Conversation] {
         switch account.tool {
-        case .claude: ClaudeSupport.latestConversation(account, home: home)
-        case .codex: CodexSupport.latestConversation(account, home: home)
-        case .opencode: nil
+        case .claude: ClaudeSupport.recentConversations(account, home: home, since: since, limit: limit)
+        case .codex: CodexSupport.recentConversations(account, home: home, since: since, limit: limit)
+        case .opencode: []
         }
     }
 
@@ -94,7 +103,12 @@ func copyReplacing(_ items: [URL], into directory: URL) throws {
 /// readers of usage and activity would count it as this one's. Each copied file keeps its length at
 /// the copy in an extended attribute, and those readers start after it; resuming reads it all.
 enum CopiedBytes {
+    #if os(Linux)
+    /// Linux lets a user set attributes only in the `user.` namespace.
+    static let attribute = "user.io.cynco.consolidatex.copied-bytes"
+    #else
     static let attribute = "io.cynco.consolidatex.copied-bytes"
+    #endif
 
     /// Records a regular file's length, over any mark it was copied with; folders and links are left alone.
     static func mark(_ path: String) throws {
@@ -103,13 +117,22 @@ enum CopiedBytes {
         guard info.st_mode & S_IFMT == S_IFREG else { return }
         let value = Array(String(info.st_size).utf8)
         // A volume without extended attributes can't hold the mark; the copy still moves the conversation.
-        guard setxattr(path, attribute, value, value.count, 0, XATTR_NOFOLLOW) == 0 || errno == ENOTSUP else { throw failure("mark", path) }
+        #if os(Linux)
+        let result = lsetxattr(path, attribute, value, value.count, 0)
+        #else
+        let result = setxattr(path, attribute, value, value.count, 0, XATTR_NOFOLLOW)
+        #endif
+        guard result == 0 || errno == ENOTSUP else { throw failure("mark", path) }
     }
 
     /// How many bytes at the start of an open file came with a copy: 0 for a file never copied.
     static func count(in file: Int32) -> UInt64 {
         var value = [UInt8](repeating: 0, count: 20)
+        #if os(Linux)
+        let length = fgetxattr(file, attribute, &value, value.count)
+        #else
         let length = fgetxattr(file, attribute, &value, value.count, 0, 0)
+        #endif
         return length > 0 ? UInt64(String(decoding: value.prefix(length), as: UTF8.self)) ?? 0 : 0
     }
 

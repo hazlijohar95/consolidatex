@@ -1,0 +1,20 @@
+#!/bin/zsh
+# Runs a command (default: script/test) in a Linux Swift container, on a copy of the working
+# tree, so acc's Linux build can be checked from a Mac. Needs Docker.
+#   script/linux [command...]
+set -eu -o pipefail
+cd ${0:A:h:h}
+
+image=swift:6.4-noble
+files=(${(0)"$(git ls-files -z --cached --others --exclude-standard)"})
+files=(${^files}(N))  # drops tracked files deleted in the working tree
+
+# The image has neither zsh, which the scripts and the shell-hook tests need, nor python3, which the
+# e2e stubs use. The command runs as an
+# ordinary user, as acc does, since root passes the permission checks some tests rely on.
+COPYFILE_DISABLE=1 tar --no-xattrs -cf - $files | docker run --rm -i --init -e DEBIAN_FRONTEND=noninteractive $image bash -c '
+  set -e
+  apt-get -qq update >/dev/null && apt-get -qq install -y zsh python3 >/dev/null
+  useradd --create-home tester
+  mkdir /src && tar xf - -C /src && chown -R tester /src
+  su tester -c "cd /src && eval \"\$0\"" "$1"' bash "${*:-script/test}"

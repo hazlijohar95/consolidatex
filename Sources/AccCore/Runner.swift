@@ -83,9 +83,8 @@ public struct Runner: Sendable {
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = self.arguments(for: account, arguments)
         process.environment = environment(for: account)
-        do { try process.run() } catch { throw AccError.toolFailed(spec.command, error.localizedDescription) }
-        process.waitUntilExit()
-        return process.terminationStatus
+        do { try process.start() } catch { throw AccError.toolFailed(spec.command, error.localizedDescription) }
+        return process.waitForExit()
     }
 
     /// Runs the tool on `account` with no terminal, returning its exit status and output
@@ -99,10 +98,9 @@ public struct Runner: Sendable {
         process.standardOutput = out
         process.standardError = includeErrors ? out : FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
-        do { try process.run() } catch { throw AccError.toolFailed(spec.command, error.localizedDescription) }
+        do { try process.start() } catch { throw AccError.toolFailed(spec.command, error.localizedDescription) }
         let data = out.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return (process.terminationStatus, data)
+        return (process.waitForExit(), data)
     }
 
     public func authStatus(for account: Account) throws -> AuthStatus {

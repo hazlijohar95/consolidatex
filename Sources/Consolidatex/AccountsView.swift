@@ -138,9 +138,9 @@ struct AccountRow: View {
                 ProgressView().controlSize(.small)
                 Text("Finish in browser").font(.caption).foregroundStyle(.secondary)
             }
-        case .inTerminal:
+        case .inTerminal(let app):
             Button("Done? Check") { model.checkHealth() }
-                .help("Finish logging in in the Terminal window, then check")
+                .help("Finish logging in in the \(app) window, then check")
         case .failed(let message):
             Button("Retry Login") { model.logIn(account) }
                 .help(message)
@@ -257,7 +257,7 @@ struct AddAccountSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(tool.spec.loginNeedsTerminal ? "Add and Log In in Terminal" : "Add and Log In") {
+                Button(tool.spec.loginNeedsTerminal ? "Add and Log In in \(model.terminal.name)" : "Add and Log In") {
                     model.add(tool: tool, label: label.trimmingCharacters(in: .whitespaces), id: id)
                     dismiss()
                 }

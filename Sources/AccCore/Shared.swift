@@ -167,3 +167,41 @@ final class Results<T>: @unchecked Sendable {
         set { lock.withLock { values[i] = newValue } }
     }
 }
+
+#if !canImport(ObjectiveC)
+/// Linux has no autorelease pool to drain, so the work just runs.
+func autoreleasepool<Result>(invoking body: () throws -> Result) rethrows -> Result { try body() }
+#endif
+
+extension Process {
+    /// Runs the process with no signals blocked. Linux children inherit the spawning thread's signal
+    /// mask, and Dispatch and Swift concurrency threads block nearly every signal, so a tool started
+    /// from one would ignore `terminate()` and Ctrl-C, and a shell would never see its jobs exit.
+    public func start() throws {
+        #if os(Linux)
+        var none = sigset_t(), previous = sigset_t()
+        sigemptyset(&none)
+        pthread_sigmask(SIG_SETMASK, &none, &previous)
+        defer { pthread_sigmask(SIG_SETMASK, &previous, nil) }
+        #endif
+        try run()
+    }
+
+    /// Waits for the process itself to exit and returns its status: the exit code, or the signal that
+    /// ended it. On Linux, Foundation learns of an exit only once every process holding a socket it
+    /// gave the child has closed it, so `waitUntilExit()` would also wait for whatever the tool left
+    /// running, such as a browser it opened for a login. This waits on the pid alone and leaves it
+    /// unreaped for Foundation.
+    public func waitForExit() -> Int32 {
+        #if os(Linux)
+        var info = siginfo_t()
+        while waitid(P_PID, id_t(processIdentifier), &info, WEXITED | WNOWAIT) != 0 {
+            // Foundation reaped it first (ECHILD), so its own status is ready.
+            guard errno == EINTR else { break }
+        }
+        if info.si_signo == SIGCHLD { return info._sifields._sigchld.si_status }
+        #endif
+        waitUntilExit()
+        return terminationStatus
+    }
+}

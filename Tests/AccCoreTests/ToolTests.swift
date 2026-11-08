@@ -94,10 +94,22 @@ func write(_ text: String, to path: String) {
         #expect(ClaudeUsageAPI.parse(Data("{}".utf8), at: t0) == nil)
     }
 
+    #if os(macOS)
     @Test func keychainItemFollowsClaudeCodesNaming() {
         let work = Account(id: "w", tool: .claude, label: "W", configDir: "~/.claude-work")
         #expect(ClaudeUsageAPI.keychainService(for: work, home: "/Users/me") == "Claude Code-credentials-1e91dd84")
         #expect(ClaudeUsageAPI.keychainService(for: sample.account(id: "team")!, home: "/Users/me") == "Claude Code-credentials")
+    }
+    #endif
+
+    /// Linux, or a Mac whose keychain Claude Code couldn't use.
+    @Test func readsALoginFromTheCredentialsFile() {
+        let home = tempHome()
+        write(#"{"claudeAiOauth":{"accessToken":"tok","refreshToken":"r","expiresAt":1800000000000}}"#, to: home + "/.claude-w/.credentials.json")
+        let login = ClaudeUsageAPI.login(for: Account(id: "w", tool: .claude, label: "W", configDir: "~/.claude-w"), home: home)
+        #expect(login?.accessToken == "tok")
+        #expect(login?.expiresAt == 1_800_000_000_000)
+        #expect(ClaudeUsageAPI.login(for: Account(id: "x", tool: .claude, label: "X", configDir: "~/.claude-x"), home: home) == nil)
     }
 
     @Test func scheduleSpacesReadsAndHonoursRetryAfter() {
@@ -590,6 +602,28 @@ func write(_ text: String, to path: String) {
         #expect(Sessions.latest(account, home: home) == Sessions.Conversation(id: "bbb", folder: "/work/app"))
     }
 
+    @Test func recentTakesTheConversationsStillGoingNewestFirst() throws {
+        let home = tempHome(), projects = home + "/.claude-c/projects"
+        for (id, age) in [("old", 3600.0), ("busy", 120), ("newest", 10)] {
+            write(#"{"type":"user","cwd":"/work/app"}"# + "\n", to: projects + "/-work-app/\(id).jsonl")
+            try FileManager.default.setAttributes([.modificationDate: Date() - age], ofItemAtPath: projects + "/-work-app/\(id).jsonl")
+        }
+        let account = Account(id: "c", tool: .claude, label: "C", configDir: "~/.claude-c")
+        let since = Date() - 600
+        #expect(Sessions.recent(account, since: since, limit: 5, home: home).map(\.id) == ["newest", "busy"])
+        #expect(Sessions.recent(account, since: since, limit: 1, home: home).map(\.id) == ["newest"])
+    }
+
+    /// Resuming an older conversation in place of the newest would continue the wrong work.
+    @Test func aNewestTranscriptThatCantBeReadIsNotReplacedByAnOlderOne() throws {
+        let home = tempHome(), projects = home + "/.claude-c/projects"
+        write(#"{"type":"user","cwd":"/work/app"}"# + "\n", to: projects + "/-work-app/older.jsonl")
+        try FileManager.default.setAttributes([.modificationDate: Date() - 600], ofItemAtPath: projects + "/-work-app/older.jsonl")
+        write(#"{"type":"summary"}"# + "\n", to: projects + "/-work-app/newest.jsonl")
+        let account = Account(id: "c", tool: .claude, label: "C", configDir: "~/.claude-c")
+        #expect(Sessions.latest(account, home: home) == nil)
+    }
+
     @Test func codexTakesTheNewestRollout() {
         let home = tempHome(), id = "0199a1b2-aaaa-7e5f-8a9b-0c1d2e3f4a5b"
         write(#"{"type":"session_meta","payload":{"id":"\#(id)","cwd":"/work/api"}}"# + "\n",
@@ -681,6 +715,38 @@ func write(_ text: String, to path: String) {
     @Test func spotsTheChromeBridge() {
         let bytes = procArgs(["claude", "--chrome-native-host"], [])
         #expect(bytes.withUnsafeBytes { RunningSessions.facts(fromProcArgs: $0, variables: [], flags: ToolSpec.claude.ignoredArguments) }.flagged)
+    }
+
+    @Test func readsLinuxArgumentsAndEnvironment() {
+        func nulTerminated(_ strings: [String]) -> [UInt8] { strings.flatMap { Array($0.utf8) + [0] } }
+        let cmdline = nulTerminated(["claude", "", "--chrome-native-host"])
+        let environ = nulTerminated(["HOME=/h", "CLAUDE_CONFIG_DIR=/h/.claude-w", "CLAUDE_CODE_OAUTH_TOKEN=secret"])
+        let facts = cmdline.withUnsafeBytes { cmdline in
+            environ.withUnsafeBytes { RunningSessions.facts(cmdline: cmdline, environ: $0, variables: ["CLAUDE_CONFIG_DIR"], flags: ToolSpec.claude.ignoredArguments) }
+        }
+        #expect(facts == RunningSessions.Facts(variables: ["CLAUDE_CONFIG_DIR": "/h/.claude-w"], flagged: true))
+    }
+
+    @Test func findsTheDesktopAppInALinuxCgroup() {
+        let user = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/"
+        // uwsm, as Omarchy starts apps, and GNOME.
+        #expect(RunningSessions.appID(fromCgroup: user + "app-Hyprland-com.mitchellh.ghostty@4f2a.service\n") == "com.mitchellh.ghostty")
+        #expect(RunningSessions.appID(fromCgroup: user + "app-gnome-org.gnome.Terminal-8121.scope") == "org.gnome.Terminal")
+        #expect(RunningSessions.appID(fromCgroup: user + "app-dev.zed.Zed.service") == "dev.zed.Zed")
+        // An escaped dash, and a terminal running inside a uwsm graphical slice.
+        #expect(RunningSessions.appID(fromCgroup: user + "app-graphical.slice/app-Hyprland-t3\\x2dcode@1.service") == "t3-code")
+        #expect(RunningSessions.appID(fromCgroup: user + "session.slice/tmux-spawn-5.scope") == nil)
+        // GNOME's VTE terminals start each tab in a scope of their own, inside the app's slice.
+        #expect(RunningSessions.appID(fromCgroup: user + "app-org.gnome.Terminal.slice/vte-spawn-1a2b.scope") == "org.gnome.Terminal")
+        #expect(RunningSessions.appID(fromCgroup: user + "app-graphical.slice") == nil)
+        #expect(RunningSessions.appID(fromCgroup: "0::/") == nil)
+    }
+
+    @Test func readsADesktopEntrysName() {
+        let entry = "[Desktop Entry]\nName[de]=Geisterterminal\nName=Ghostty\nExec=ghostty\n[Desktop Action new-window]\nName=New Window\n"
+        #expect(RunningSessions.desktopEntryName(entry) == "Ghostty")
+        #expect(RunningSessions.desktopEntryName("[Desktop Action x]\nName=Other\n") == nil)
+        #expect(RunningSessions.desktopEntryName("[Desktop Entry]\nName = Ghostty \n") == "Ghostty")
     }
 
     @Test func namesKnownAppsByBundleID() {

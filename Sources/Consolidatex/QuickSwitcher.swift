@@ -16,9 +16,9 @@ struct QuickSwitchView: View {
     var body: some View {
         let now = Date()
         VStack(alignment: .leading, spacing: 8) {
-            Text("Start new sessions on…").font(Theme.title).foregroundStyle(Theme.ink(0.9))
+            Text("Start new sessions on…").font(Theme.title).foregroundStyle(Theme.text)
             if accounts.isEmpty {
-                Text("No tool has more than one account yet.").font(Theme.caption).foregroundStyle(Theme.ink(0.5))
+                Text("No tool has more than one account yet.").font(Theme.caption).foregroundStyle(Theme.muted)
             } else {
                 List(selection: $selection) {
                     ForEach(accounts) { account in row(account, now: now).tag(account.id) }
@@ -28,14 +28,15 @@ struct QuickSwitchView: View {
                 .focused($listFocused)
                 .frame(height: min(CGFloat(accounts.count) * 30 + 8, 330))
             }
-            Text("↑↓ choose · Return switches · Esc closes").font(Theme.caption).foregroundStyle(Theme.ink(0.4))
+            Text("↑↓ choose · Return switches · Esc closes").font(Theme.caption).foregroundStyle(Theme.faint)
             // Return and Esc, with no visible buttons.
             Button("", action: switchToSelection).keyboardShortcut(.defaultAction).opacity(0).frame(width: 0, height: 0)
             Button("", action: close).keyboardShortcut(.cancelAction).opacity(0).frame(width: 0, height: 0)
         }
         .padding(14)
         .frame(width: 420)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .background(Theme.background, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.border))
         .onAppear {
             selection = initialSelection(at: now)
             listFocused = true
@@ -48,15 +49,15 @@ struct QuickSwitchView: View {
         let used = usage.map { $0.load(at: now) }
         let capped = usage?.isCapped(at: now) ?? false
         return HStack(spacing: 8) {
-            Text(account.tool.rawValue).font(Theme.figure).foregroundStyle(Theme.ink(0.4)).frame(width: 64, alignment: .leading)
-            Text(account.label).font(Theme.sans(13)).lineLimit(1)
+            Text(account.tool.spec.name).font(Theme.caption).foregroundStyle(Theme.faint).frame(width: 76, alignment: .leading)
+            Text(account.label).font(Theme.sans(13)).foregroundStyle(Theme.text).lineLimit(1)
             if model.registry?.isCurrent(account) == true {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.pick).help("Next session")
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.accent).help("Next session")
             }
             Spacer()
             Text(capped ? "Capped" : used.map { "\(Int($0.rounded()))%" } ?? "—")
-                .font(Theme.mono(12, .medium))
-                .foregroundStyle(capped ? Theme.bad : used.map(Theme.level) ?? Theme.ink(0.35))
+                .font(Theme.sans(12, .medium).monospacedDigit())
+                .foregroundStyle(capped ? Theme.bad : used.map { Theme.level($0, neutral: Theme.muted) } ?? Theme.faint)
         }
     }
 

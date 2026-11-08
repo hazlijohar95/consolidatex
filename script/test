@@ -3,13 +3,15 @@
 set -eu -o pipefail
 cd ${0:A:h:h}
 
-source script/toolchain
+build_flags=() testing_flags=()
+if [[ $OSTYPE == darwin* ]]; then
+  source script/toolchain
+  dev=$clt/Library/Developer
+fi
 
 # Command Line Tools ship swift-testing outside the default search path, and SwiftPM's newer build
 # system doesn't find their testing macros, so they build with the native one. Xcode needs neither.
-dev=$clt/Library/Developer
-build_flags=() testing_flags=()
-if [[ $(xcode-select -p) == $clt && -d $dev/Frameworks/Testing.framework ]]; then
+if [[ $OSTYPE == darwin* && $(xcode-select -p) == $clt && -d $dev/Frameworks/Testing.framework ]]; then
   build_flags=(--build-system native)
   testing_flags=(-Xswiftc -F$dev/Frameworks -Xlinker -F$dev/Frameworks
     -Xlinker -rpath -Xlinker $dev/Frameworks -Xlinker -rpath -Xlinker $dev/usr/lib)

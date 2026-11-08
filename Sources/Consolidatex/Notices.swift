@@ -36,6 +36,19 @@ enum Notices {
         }
     }
 
+    /// The app moved conversations off `account` on its own: `opened` resumed in `app`, and `failure`
+    /// says why the others didn't open.
+    static func continued(_ account: Account, on target: Account, opened: Int, failure: String?, in app: String) {
+        let title = "\(account.label) is at its limit"
+        if opened == 0 {
+            return post("limit-\(account.id)", title: title, body: failure.map { "Its conversations couldn't continue on \(target.label): \($0)." }
+                ?? "\(target.label) has room, but Consolidatex couldn't find a conversation to move.")
+        }
+        let conversations = opened == 1 ? "Its conversation continues" : "Its \(opened) conversations continue"
+        let rest = failure.map { " Others didn't open: \($0)." } ?? ""
+        post("limit-\(account.id)", title: title, body: "\(conversations) on \(target.label), in new \(app) windows.\(rest)")
+    }
+
     /// `target` is nil when no other account has room; `conversation`, when none was found to move.
     static func atLimit(_ account: Account, continueOn target: Account?, conversation: Sessions.Conversation?) {
         guard let target else {

@@ -14,7 +14,7 @@ final class Model: ObservableObject {
 
     enum Login: Equatable {
         case waiting
-        case inTerminal
+        case inTerminal(app: String)
         case failed(String)
     }
 
@@ -37,6 +37,16 @@ final class Model: ObservableObject {
     }
     /// Set when someone picks an account while their terminal doesn't follow picks yet.
     @Published private(set) var offerTerminal = false
+    /// Where conversations and logins that need a terminal open.
+    @Published var terminal = TerminalApp.preferred(saved: UserDefaults.standard.string(forKey: "terminal")) {
+        didSet { UserDefaults.standard.set(terminal.id, forKey: "terminal") }
+    }
+    /// The terminals installed, looked up when the panel opens rather than on every redraw.
+    @Published private(set) var terminals = TerminalApp.installed()
+    /// When a busy account hits its limit, resume its conversations on the roomiest account without asking.
+    @Published var continueAutomatically = UserDefaults.standard.bool(forKey: "continueAutomatically") {
+        didSet { UserDefaults.standard.set(continueAutomatically, forKey: "continueAutomatically") }
+    }
     /// Move new sessions off an account that hits its limit, and back once it resets.
     @Published var autoSwitch = UserDefaults.standard.object(forKey: "autoSwitch") as? Bool ?? true {
         didSet {
@@ -70,6 +80,10 @@ final class Model: ObservableObject {
             HotKey(keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(cmdKey | optionKey)) { [weak self] in self?.showQuickSwitcher() },
             HotKey(keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(cmdKey | optionKey | shiftKey)) { [weak self] in self?.showPanel() },
         ].compactMap { $0 }
+        #if DEBUG
+        // For screenshots of the panel without clicking the menu bar.
+        if CommandLine.arguments.contains("--show-panel") { DispatchQueue.main.async { [weak self] in self?.showPanel() } }
+        #endif
         LoginShell.adopt(LoginShell.usualPlaces)
         locateTools()
         Task {
@@ -168,7 +182,11 @@ final class Model: ObservableObject {
     /// The menu bar panel, for ⇧⌥⌘A. SwiftUI can't open a menu bar extra from code, so it opens in the
     /// middle of the screen instead.
     func showPanel() {
-        panel.toggle { _ in UsagePanel(model: self).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) }
+        panel.toggle(focusFirst: false) { _ in
+            UsagePanel(model: self)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.border))
+        }
     }
 
     // MARK: Following usage
@@ -185,6 +203,10 @@ final class Model: ObservableObject {
         for id in changes.capped {
             guard let account = registry.account(id: id), Sessions.supports(account.tool), monitor.isActive(account, at: now) else { continue }
             let target = registry.roomiest(account.tool, usage, excluding: id, at: now)
+            if continueAutomatically, let target {
+                continueRunning(account, on: target, at: now)
+                continue
+            }
             // Finding the conversation reads the account's transcripts, so it stays off the main thread.
             Task.detached {
                 let conversation = target == nil ? nil : Sessions.latest(account)
@@ -211,7 +233,7 @@ final class Model: ObservableObject {
         return returned
     }
 
-    /// Moves `account`'s latest conversation to the account with the most left, and resumes it in Terminal.
+    /// Moves `account`'s latest conversation to the account with the most left, and resumes it in the picked terminal.
     func continueElsewhere(_ account: Account) {
         lastError = nil
         guard let registry, let target = registry.roomiest(account.tool, monitor.readings, excluding: account.id) else {
@@ -231,8 +253,44 @@ final class Model: ObservableObject {
     }
 
     func continueConversation(_ conversation: Sessions.Conversation, on target: String) {
+        openInTerminal(Self.continueCommand(conversation, on: target))
+    }
+
+    /// `acc continue` for `conversation`, run in the folder it started in.
+    private static func continueCommand(_ conversation: Sessions.Conversation, on target: String, prompt: String? = nil) -> String {
         // The id comes from a file another program wrote, so every part is quoted.
-        openInTerminal("cd \(Self.quoted(conversation.folder)) && \(Self.acc) continue \(Self.quoted(target)) --session \(Self.quoted(conversation.id))")
+        let prompt = prompt.map { " --prompt \(quoted($0))" } ?? ""
+        return "cd \(quoted(conversation.folder)) && \(acc) continue \(quoted(target)) --session \(quoted(conversation.id))\(prompt)"
+    }
+
+    func refreshTerminals() {
+        let installed = TerminalApp.installed()
+        if installed != terminals { terminals = installed }
+    }
+
+    /// What a moved conversation is told, so it picks the cut-off work back up instead of waiting.
+    static let resumePrompt = "The usage limit cut you off, and this conversation has moved to another account. Continue where you left off."
+
+    /// Resumes every conversation still going on `account` on `target`, in windows that open behind the
+    /// person's work. One per running session: transcripts written in the last 10 minutes, newest first.
+    private func continueRunning(_ account: Account, on target: Account, at now: Date) {
+        let sessions = max(1, (monitor.running[account.id] ?? []).reduce(0) { $0 + $1.count })
+        let app = terminal
+        Task {
+            let conversations = await LiveUsage.offPool { Sessions.recent(account, since: now - 10 * 60, limit: sessions) }
+            var opened = 0, failure: String?
+            for conversation in conversations {
+                let command = Self.continueCommand(conversation, on: target.id, prompt: Self.resumePrompt)
+                if let problem = await launchInTerminal(command, in: app, activate: false) {
+                    failure = problem
+                } else {
+                    opened += 1
+                }
+            }
+            if let failure { lastError = failure }
+            // Said only once the windows opened, so a failed launch never reads as work going on.
+            Notices.continued(account, on: target, opened: opened, failure: failure, in: app.name)
+        }
     }
 
     /// The last 7 days per account, from the history the monitor records.
@@ -325,7 +383,7 @@ final class Model: ObservableObject {
         }
     }
 
-    /// A login finished in Terminal, or by hand after the app gave up on it: the tool now says the
+    /// A login finished in a terminal, or by hand after the app gave up on it: the tool now says the
     /// account is logged in, so its row stops asking and its login is read again.
     private func finishLogins(_ results: [String: AccountHealth]) {
         // A login running in the app reports its own end; a check meanwhile sees the old login.
@@ -369,7 +427,7 @@ final class Model: ObservableObject {
 
     func dismissSyncReport() { syncReport = nil }
 
-    /// Logs an account in: in the app when the tool only needs a browser, otherwise in Terminal.
+    /// Logs an account in: in the app when the tool only needs a browser, otherwise in the picked terminal.
     func logIn(_ account: Account) {
         guard let runner = runners[account.tool] else {
             logins[account.id] = .failed("\(account.tool.spec.command) is not installed")
@@ -377,7 +435,7 @@ final class Model: ObservableObject {
         }
         if account.tool.spec.loginNeedsTerminal {
             openInTerminal("\(Self.acc) login \(account.id)")
-            logins[account.id] = .inTerminal
+            logins[account.id] = .inTerminal(app: terminal.name)
             return
         }
         logins[account.id] = .waiting
@@ -425,23 +483,33 @@ final class Model: ObservableObject {
         return .failure("timed out waiting for the browser login")
     }
 
-    /// The acc bundled next to this app, quoted for the shell, so Terminal doesn't need it on PATH.
+    /// The acc bundled next to this app, quoted for the shell, so the terminal doesn't need it on PATH.
     private static let acc = Bundle.main.path(forAuxiliaryExecutable: "acc").map(quoted) ?? "acc"
 
     /// `text` as one word for zsh.
     nonisolated static func quoted(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: #"'\''"#) + "'" }
 
-    /// Opens Terminal running `command` through a throwaway .command file (no automation permission needed).
+    /// Runs `command` in a new window of the picked terminal, through a throwaway script that deletes itself.
     /// An interactive login shell reads .zshrc too, where the tools' PATH entries usually live.
     func openInTerminal(_ command: String) {
+        let app = terminal
+        Task {
+            if let failure = await launchInTerminal(command, in: app, activate: true) { lastError = failure }
+        }
+    }
+
+    /// Writes the script and has `app` run it. Returns what went wrong, if anything.
+    private func launchInTerminal(_ command: String, in app: TerminalApp, activate: Bool) async -> String? {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("consolidatex-\(UUID().uuidString).command")
         let script = "#!/bin/zsh -il\nrm -f -- \"$0\"\n\(command)\necho\nread -k1 '?Press any key to close…'\n"
         do {
             try script.write(to: file, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
-            NSWorkspace.shared.open(file)
+            try await app.run(file, activate: activate)
+            return nil
         } catch {
-            lastError = "could not open Terminal: \(error.localizedDescription)"
+            try? FileManager.default.removeItem(at: file)
+            return "could not open \(app.name): \(error.localizedDescription)"
         }
     }
 

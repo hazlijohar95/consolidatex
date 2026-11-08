@@ -118,7 +118,7 @@ public actor TranscriptLog {
         while let entry = readdir(dir) {
             withUnsafePointer(to: &entry.pointee.d_name) { tuple in
                 tuple.withMemoryRebound(to: CChar.self, capacity: MemoryLayout.size(ofValue: tuple.pointee)) { cName in
-                    let name = UnsafeRawBufferPointer(start: cName, count: Int(entry.pointee.d_namlen))
+                    let name = UnsafeRawBufferPointer(start: cName, count: strlen(cName))
                     let path = { directory + "/" + String(decoding: name, as: UTF8.self) }
                     let isTranscript = name.count > jsonl.count && name.suffix(jsonl.count).elementsEqual(jsonl)
                     var type = Int32(entry.pointee.d_type)
@@ -126,12 +126,12 @@ public actor TranscriptLog {
                     // Some file systems don't say what an entry is. A link to a folder is never followed.
                     if type == DT_UNKNOWN {
                         guard fstatat(dirfd(dir), cName, &info, AT_SYMLINK_NOFOLLOW) == 0 else { return }
-                        type = info.st_mode & S_IFMT == S_IFDIR ? DT_DIR : DT_REG
+                        type = info.st_mode & S_IFMT == S_IFDIR ? Int32(DT_DIR) : Int32(DT_REG)
                     }
                     if type == DT_DIR {
                         if !name.elementsEqual(dot), !name.elementsEqual(dotDot) { folders.append(path()) }
                     } else if isTranscript, fstatat(dirfd(dir), cName, &info, 0) == 0 {
-                        visit(Date(info.st_mtimespec), path)
+                        visit(info.modified, path)
                     }
                 }
             }
@@ -204,7 +204,8 @@ public actor TranscriptLog {
     }
 
     private static func contains(_ line: UnsafeRawBufferPointer, _ text: StaticString) -> Bool {
-        memmem(line.baseAddress, line.count, text.utf8Start, text.utf8CodeUnitCount) != nil
+        guard let base = line.baseAddress else { return false }
+        return memmem(base, line.count, text.utf8Start, text.utf8CodeUnitCount) != nil
     }
 
     private static let decoder = JSONDecoder()

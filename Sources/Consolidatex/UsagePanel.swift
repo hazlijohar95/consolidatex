@@ -43,16 +43,18 @@ struct UsagePanel: View {
                 if let error = model.lastError {
                     Text(error).problem().padding(.horizontal, 14).padding(.top, 6)
                 }
-                Rectangle().fill(Theme.stroke).frame(height: 1).padding(.top, 8)
-                footer.padding(.horizontal, 14).padding(.vertical, 8)
+                Rectangle().fill(Theme.borderMuted).frame(height: 1).padding(.top, 8)
+                footer.padding(.horizontal, 8).padding(.vertical, 6)
             }
         }
         .frame(width: 360)
+        .background(Theme.background)
         .onAppear {
             focus = nil
             model.monitor.refresh()
+            model.refreshTerminals()
             // A Terminal login finishes outside the app, so opening the panel is when to look.
-            if model.logins.values.contains(.inTerminal) { model.checkHealth() }
+            if model.logins.values.contains(where: { if case .inTerminal = $0 { true } else { false } }) { model.checkHealth() }
         }
         .onDisappear { model.dismissError() }
     }
@@ -61,28 +63,30 @@ struct UsagePanel: View {
     private var terminalOffer: some View {
         let file = model.shell.map { abbreviatingHome($0.hook().file) } ?? "your shell's startup file"
         return VStack(alignment: .leading, spacing: 6) {
-            Text("Make your terminal follow this pick?").font(Theme.title).foregroundStyle(Theme.ink(0.9))
+            Text("Make your terminal follow this pick?").font(Theme.title).foregroundStyle(Theme.text)
             Text("New claude, codex and opencode sessions start on the account you pick once Consolidatex adds one line to \(file). It also turns on Claude Code's status line, which shows each session's account and usage.")
-                .font(Theme.caption).foregroundStyle(Theme.ink(0.55)).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 10) {
-                Button("Add the Line") { model.connectTerminal() }.buttonStyle(.borderedProminent).controlSize(.small)
-                Button("Not Now") { model.declineTerminal() }.buttonStyle(.plain).font(Theme.caption).foregroundStyle(Theme.ink(0.5))
+                .font(Theme.caption).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 4) {
+                Button("Add the Line") { model.connectTerminal() }.buttonStyle(PrimaryButtonStyle())
+                Button("Not Now") { model.declineTerminal() }.buttonStyle(GhostButtonStyle())
             }
         }
         .padding(10)
-        .background(Theme.hover, in: RoundedRectangle(cornerRadius: Theme.radius))
-        .overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(Theme.stroke))
+        .background(Theme.raised, in: RoundedRectangle(cornerRadius: Theme.radius))
+        .overlay(RoundedRectangle(cornerRadius: Theme.radius).strokeBorder(Theme.border))
     }
 
     private var header: some View {
         HStack(spacing: 6) {
             Text("✳︎").foregroundStyle(Theme.claude)
-            Text("Consolidatex").font(Theme.title).foregroundStyle(Theme.ink(0.9))
+            Text("Consolidatex").font(Theme.title).foregroundStyle(Theme.text)
             Spacer()
             Button { model.monitor.refresh(force: true) } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Theme.ink(0.5))
+                    .foregroundStyle(Theme.faint)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
                     .rotationEffect(.degrees(model.monitor.spinning ? 360 : 0))
                     .animation(model.monitor.spinning ? .linear(duration: 0.8).repeatForever(autoreverses: false) : .default,
                                value: model.monitor.spinning)
@@ -112,6 +116,7 @@ struct UsagePanel: View {
                 openWindow(id: "accounts")
                 NSApp.activate(ignoringOtherApps: true)
             }
+            .buttonStyle(GhostButtonStyle())
             .keyboardShortcut(",")
             Spacer()
             Menu {
@@ -122,23 +127,29 @@ struct UsagePanel: View {
                 }
                 Divider()
                 Toggle("Switch Automatically at a Limit", isOn: $model.autoSwitch)
+                Toggle("Continue Conversations Automatically at a Limit", isOn: $model.continueAutomatically)
                 Toggle("Live Claude Usage from Anthropic", isOn: Binding(get: { model.monitor.liveClaude }, set: { model.monitor.liveClaude = $0 }))
                 Toggle("Open at Login", isOn: Binding(get: { model.opensAtLogin }, set: { _ in model.toggleOpenAtLogin() }))
+                if model.terminals.count > 1 {
+                    Picker("Open Conversations In", selection: $model.terminal) {
+                        ForEach(model.terminals) { Text($0.name).tag($0) }
+                    }
+                    .pickerStyle(.menu)
+                }
                 Divider()
                 Button("Use the Accounts with the Most Room") { model.useRoomiest() }
                 Divider()
                 Button("Quit Consolidatex") { NSApplication.shared.terminate(nil) }
             } label: {
-                Image(systemName: "ellipsis.circle")
+                Image(systemName: "ellipsis")
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .foregroundStyle(Theme.faint)
+            .padding(.horizontal, 6)
             .help("Live Claude usage asks Anthropic for each Claude account's limits every 5 minutes, using its own Claude Code login. Off, usage comes only from status lines.")
         }
-        .buttonStyle(.plain)
-        .font(Theme.caption)
-        .foregroundStyle(Theme.ink(0.5))
     }
 }
 
@@ -163,8 +174,9 @@ private struct RowActions {
     let dismiss: () -> Void
     let logIn: () -> Void
     let reveal: () -> Void
-    /// Offered on an account at its limit with a session running: the target's name, and the move.
-    let continueElsewhere: (target: String, run: () -> Void)?
+    /// Offered on an account at its limit with a session running: the target's name, the installed
+    /// terminals with the picked one first, and the move, which also makes its terminal the pick.
+    let continueElsewhere: (target: String, terminals: [TerminalApp], run: (TerminalApp) -> Void)?
     /// Offered on a Claude account with no reading: turns on live usage.
     let checkLive: (() -> Void)?
 }
@@ -186,18 +198,17 @@ private struct ToolSection: View {
         let choosing = accounts.count > 1
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
-                Text(tool.spec.name.uppercased()).font(Theme.sans(11, .medium)).tracking(0.6).foregroundStyle(Theme.ink(0.45))
-                Text("\(accounts.count)")
-                    .font(Theme.sans(10, .medium))
-                    .foregroundStyle(Theme.ink(0.7))
-                    .padding(.horizontal, 5)
-                    .background(Theme.selection, in: Capsule())
+                Text(tool.spec.name).font(Theme.sans(12, .medium)).foregroundStyle(Theme.muted)
+                Text("\(accounts.count)").font(Theme.figure).foregroundStyle(Theme.faint)
                 Spacer()
                 if accounts.contains(where: { readings[$0.id] != nil }) {
-                    Text("\(ready)/\(accounts.count) ready").font(Theme.figure).foregroundStyle(ready > 0 ? Theme.good : Theme.bad)
+                    HStack(spacing: 5) {
+                        Circle().fill(ready > 0 ? Theme.good : Theme.bad).frame(width: 6, height: 6)
+                        Text("\(ready) of \(accounts.count) ready").font(Theme.figure).foregroundStyle(Theme.faint)
+                    }
                 }
             }
-            .padding(.horizontal, 8).padding(.top, 8).padding(.bottom, 2)
+            .padding(.horizontal, 8).padding(.top, 10).padding(.bottom, 4)
             ForEach(accounts) { account in
                 UsageRow(account: account, usage: readings[account.id], identity: model.monitor.identities[account.id],
                          activity: model.monitor.activity[account.id], now: now,
@@ -241,7 +252,13 @@ private struct ToolSection: View {
             dismiss: { set(nil) },
             logIn: { model.logIn(account) },
             reveal: { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: account.folder())]) },
-            continueElsewhere: continueTarget(for: account).map { target in (target.label, { model.continueElsewhere(account) }) },
+            continueElsewhere: continueTarget(for: account).map { target in
+                let others = model.terminals.filter { $0 != model.terminal }
+                return (target.label, [model.terminal] + others, { app in
+                    model.terminal = app
+                    model.continueElsewhere(account)
+                })
+            },
             checkLive: account.tool == .claude && !model.monitor.liveClaude ? { model.monitor.liveClaude = true } : nil)
     }
 }
@@ -283,8 +300,7 @@ private struct UsageRow: View {
                 details.transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .background(isPicked || mode != nil ? Theme.selection : hovering ? Theme.hover : .clear,
-                    in: RoundedRectangle(cornerRadius: Theme.radius))
+        .background { surface }
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.15), value: hovering)
         .help(help)
@@ -297,12 +313,29 @@ private struct UsageRow: View {
         }
     }
 
+    /// Raised with a hairline when picked or open, with opencode's accent line down the picked one.
+    @ViewBuilder
+    private var surface: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.radius)
+        if isPicked || mode != nil {
+            shape.fill(Theme.raised)
+                .overlay(shape.strokeBorder(Theme.borderMuted))
+                .overlay(alignment: .leading) {
+                    if isPicked {
+                        Capsule().fill(Theme.accent).frame(width: 2).padding(.vertical, 8)
+                    }
+                }
+        } else {
+            shape.fill(hovering ? Theme.hover : .clear)
+        }
+    }
+
     /// What runs on the account now, where its tokens went, and the switch.
     private var details: some View {
         VStack(alignment: .leading, spacing: 8) {
             fact("Running now") {
                 if running.isEmpty {
-                    Text("nothing").foregroundStyle(Theme.ink(0.45))
+                    Text("nothing").foregroundStyle(Theme.faint)
                 } else {
                     HStack(spacing: 10) {
                         ForEach(running, id: \.launcher) { app in
@@ -320,15 +353,15 @@ private struct UsageRow: View {
             if let switchHere = actions.switchHere {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Start new \(account.tool.spec.name) sessions on \(account.label)?")
-                        .font(Theme.sans(12, .medium)).foregroundStyle(Theme.ink(0.9))
+                        .font(Theme.sans(12, .medium)).foregroundStyle(Theme.text)
                     Text("Applies the next time you run \(account.tool.spec.command), in any terminal. Sessions already running keep their account.")
-                        .font(Theme.caption).foregroundStyle(Theme.ink(0.55)).fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 10) {
+                        .font(Theme.caption).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 4) {
                         Button("Switch", action: switchHere)
-                            .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.pick)
+                            .buttonStyle(PrimaryButtonStyle())
                             .keyboardShortcut(.defaultAction)
                         Button("Cancel", action: actions.dismiss)
-                            .buttonStyle(.plain).font(Theme.caption).foregroundStyle(Theme.ink(0.5))
+                            .buttonStyle(GhostButtonStyle())
                             .keyboardShortcut(.cancelAction)
                     }
                 }
@@ -343,8 +376,8 @@ private struct UsageRow: View {
 
     private func fact<Content: View>(_ label: String, @ViewBuilder _ content: () -> Content) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label).foregroundStyle(Theme.ink(0.4)).frame(width: 78, alignment: .leading)
-            content().foregroundStyle(Theme.ink(0.75))
+            Text(label).foregroundStyle(Theme.faint).frame(width: 78, alignment: .leading)
+            content().foregroundStyle(Theme.muted)
         }
         .font(Theme.caption)
     }
@@ -359,22 +392,39 @@ private struct UsageRow: View {
         VStack(alignment: .leading, spacing: 5) {
             titleLine
             if mode == .renaming {
-                Text("Return saves · Esc cancels").font(Theme.caption).foregroundStyle(Theme.ink(0.4))
+                Text("Return saves · Esc cancels").font(Theme.caption).foregroundStyle(Theme.faint)
             } else {
                 detailLine
             }
             if let headline { Meter(percent: isCapped ? 100 : headline.used(at: now)) }
             if let forecast = usage?.forecast(at: now, active: isActive) {
-                Text("\(forecast.window.label) fills \(Format.capTime(forecast.capsAt, from: now)) at this pace")
+                (Text("\(forecast.window.label) fills ") + Text(Format.capTime(forecast.capsAt, from: now)).foregroundColor(Theme.warn) + Text(" at this pace"))
                     .font(Theme.caption)
-                    .foregroundStyle(Theme.warn)
+                    .foregroundStyle(Theme.faint)
                     .help("Projected from average use since the window opened")
             }
             loginStatus
-            if let move = actions.continueElsewhere {
-                Button("Continue this conversation on \(move.target)", action: move.run)
-                    .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.pick)
-                    .help("Moves the latest conversation to \(move.target) and resumes it there, in Terminal")
+            if let move = actions.continueElsewhere, let picked = move.terminals.first {
+                HStack(spacing: 1) {
+                    Button("Continue on \(move.target) in \(picked.name)") { move.run(picked) }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .help("Moves the latest conversation to \(move.target) and resumes it there, in \(picked.name)")
+                    if move.terminals.count > 1 {
+                        Menu {
+                            ForEach(move.terminals.dropFirst()) { app in
+                                Button("Continue in \(app.name)") { move.run(app) }
+                            }
+                        } label: {
+                            Image(systemName: "chevron.down")
+                        }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                        .foregroundStyle(Theme.onContrast)
+                        .frame(width: 24, height: 24)
+                        .background(Theme.contrast, in: RoundedRectangle(cornerRadius: 5))
+                        .help("Continue in another terminal, which then opens from now on")
+                    }
+                }
+                .padding(.top, 2)
             }
             missNote
         }
@@ -390,7 +440,7 @@ private struct UsageRow: View {
         case .tokenExpired:
             Text(usage.map { "Usage as of \($0.recordedAt.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute())) · updates when this account is next used" }
                  ?? "Updates when this account is next used")
-                .font(Theme.caption).foregroundStyle(Theme.ink(0.45)).lineLimit(2)
+                .font(Theme.caption).foregroundStyle(Theme.faint).lineLimit(2)
                 .help("The access token expired. Claude Code renews it the next time this account is used.")
         case nil:
             EmptyView()
@@ -403,10 +453,10 @@ private struct UsageRow: View {
         case .waiting:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.mini)
-                Text("Finish logging in in your browser").font(Theme.caption).foregroundStyle(Theme.ink(0.55))
+                Text("Finish logging in in your browser").font(Theme.caption).foregroundStyle(Theme.muted)
             }
-        case .inTerminal:
-            Text("Finish logging in in the Terminal window").font(Theme.caption).foregroundStyle(Theme.ink(0.55))
+        case .inTerminal(let app):
+            Text("Finish logging in in the \(app) window").font(Theme.caption).foregroundStyle(Theme.muted)
         case .failed(let reason):
             Text("Login didn't finish: \(reason)").problem()
         case nil:
@@ -428,7 +478,7 @@ private struct UsageRow: View {
                 TextField("Name", text: $draft)
                     .textFieldStyle(.plain)
                     .font(Theme.title)
-                    .foregroundStyle(Theme.ink(0.9))
+                    .foregroundStyle(Theme.text)
                     .focused($nameFocused)
                     .onSubmit {
                         editDone = true
@@ -439,8 +489,8 @@ private struct UsageRow: View {
                         actions.dismiss()
                     }
                     .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 4))
-                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1))
+                    .background(Theme.background, in: RoundedRectangle(cornerRadius: 4))
+                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.accent.opacity(0.7), lineWidth: 1))
                     .padding(.horizontal, -5)
                     .onAppear {
                         draft = account.label
@@ -455,26 +505,26 @@ private struct UsageRow: View {
                     }
             } else {
                 // The name gives way before the badges do.
-                Text(account.label).font(Theme.title).foregroundStyle(Theme.ink(0.9)).lineLimit(1).layoutPriority(-1)
+                Text(account.label).font(Theme.title).foregroundStyle(Theme.text).lineLimit(1).layoutPriority(-1)
             }
             if let plan = identity?.plan {
-                Text(plan).font(Theme.caption).foregroundStyle(Theme.ink(0.4)).fixedSize()
+                Text(plan).font(Theme.caption).foregroundStyle(Theme.faint).fixedSize()
             }
             if !running.isEmpty {
                 RunningApps(apps: running)
             }
             if isPicked {
-                Badge(text: "Next session", systemImage: "checkmark.circle.fill", tint: Theme.pick, filled: true)
+                Tag(text: "Next session", tint: Theme.accent)
                     .help("The next \(account.tool.spec.command) you start, in any terminal, runs on this account")
             } else if isNext {
-                Badge(text: "Most tokens left", systemImage: "arrow.up.right", tint: Theme.good, filled: false)
+                Tag(text: "Most left", tint: Theme.good)
                     .help("The account with the most left on the limits all its models share")
             }
             Spacer()
             let used = headline.map { $0.used(at: now) }
             Text(isCapped ? "Capped" : used.map { "\(Int($0.rounded()))%" } ?? "—")
-                .font(Theme.mono(12, .medium))
-                .foregroundStyle(isCapped ? Theme.bad : used.map(Theme.level) ?? Theme.ink(0.35))
+                .font(Theme.sans(12, .medium).monospacedDigit())
+                .foregroundStyle(isCapped ? Theme.bad : used.map { Theme.level($0, neutral: Theme.muted) } ?? Theme.faint)
         }
     }
 
@@ -484,28 +534,28 @@ private struct UsageRow: View {
             // Masked at rest so the panel is safe to screen-share; hovering the row reveals it.
             Text((identity?.email ?? account.email).map { hovering ? $0 : Format.masked($0) } ?? account.id)
                 .font(Theme.caption)
-                .foregroundStyle(Theme.ink(hovering ? 0.7 : 0.45))
+                .foregroundStyle(hovering ? Theme.muted : Theme.faint)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
             if usage == nil, let checkLive = actions.checkLive {
                 Button("Check with Anthropic", action: checkLive)
-                    .buttonStyle(.plain).font(Theme.caption).foregroundStyle(Color.accentColor)
+                    .buttonStyle(.plain).font(Theme.caption).foregroundStyle(Theme.accent)
                     .help("Turns on live Claude usage: every 5 minutes, each Claude account's login asks Anthropic for its limits")
             } else if usage == nil {
-                Text(UsageFormat.empty(tool: account.tool)).font(Theme.caption).foregroundStyle(Theme.ink(0.35))
+                Text(UsageFormat.empty(tool: account.tool)).font(Theme.caption).foregroundStyle(Theme.faint)
             }
             ForEach(usage?.windows.dropFirst().map { $0 } ?? [], id: \.label) { window in
                 let used = window.used(at: now)
-                (Text(window.label).foregroundColor(Theme.ink(0.3)) + Text(" \(Int(used.rounded()))%"))
+                (Text(window.label).foregroundColor(Theme.faint) + Text(" \(Int(used.rounded()))%"))
                     .font(Theme.figure)
-                    .foregroundStyle(used >= 85 ? Theme.level(used) : Theme.ink(0.5))
+                    .foregroundStyle(Theme.level(used, neutral: Theme.muted))
                     .help(window.resetsAt.map { "\(window.label) resets \($0.formatted(.dateTime.weekday(.abbreviated).hour().minute()))" } ?? window.label)
             }
             if let headline, let resetsAt = headline.resetsAt, resetsAt > now, headline.used(at: now) > 0 {
                 (Text("↻ ") + Text(timerInterval: now...resetsAt, countsDown: true))
                     .font(Theme.figure)
-                    .foregroundStyle(Theme.ink(0.4))
+                    .foregroundStyle(Theme.faint)
                     .help("\(headline.label) resets \(resetsAt.formatted(date: .omitted, time: .shortened))")
             }
         }
@@ -522,7 +572,7 @@ private struct RunningApps: View {
             ForEach(apps.prefix(3), id: \.launcher) { app in
                 HStack(spacing: 1) {
                     LauncherIcon(launcher: app.launcher)
-                    if app.count > 1 { Text("\(app.count)").font(Theme.sans(9, .semibold)).foregroundStyle(Theme.ink(0.5)) }
+                    if app.count > 1 { Text("\(app.count)").font(Theme.sans(9, .semibold)).foregroundStyle(Theme.faint) }
                 }
             }
         }
@@ -539,43 +589,37 @@ private struct LauncherIcon: View {
         if let bundle = launcher.bundle {
             Image(nsImage: AppIcons.icon(for: bundle)).resizable().frame(width: 14, height: 14)
         } else {
-            Image(systemName: "gearshape").font(.system(size: 10)).foregroundStyle(Theme.ink(0.45)).frame(width: 14, height: 14)
+            Image(systemName: "gearshape").font(.system(size: 10)).foregroundStyle(Theme.faint).frame(width: 14, height: 14)
         }
     }
 }
 
-/// A small capsule: filled for a state the account is in, outlined for a suggestion.
-private struct Badge: View {
+/// A quiet label for a state the account is in, tinted by what it means.
+private struct Tag: View {
     let text: String
-    let systemImage: String
     let tint: Color
-    let filled: Bool
 
     var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: systemImage).font(.system(size: 8.5, weight: .bold))
-            Text(text)
-        }
-        .font(Theme.sans(10, .semibold))
-        .foregroundStyle(tint)
-        .padding(.horizontal, 6).padding(.vertical, 2)
-        .fixedSize()
-        .background(filled ? tint.opacity(0.14) : .clear, in: Capsule())
-        .overlay(Capsule().strokeBorder(tint.opacity(filled ? 0.25 : 0.5), lineWidth: 0.75))
+        Text(text)
+            .font(Theme.sans(10.5, .medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 5).padding(.vertical, 1.5)
+            .fixedSize()
+            .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
     }
 }
 
-/// A thin bar for the share of a limit used, coloured by `Theme.level`.
+/// A thin bar for the share of a limit used, neutral until `Theme.level` says otherwise.
 private struct Meter: View {
     let percent: Double
 
     var body: some View {
-        Capsule().fill(Theme.stroke)
-            .frame(height: 3)
+        Capsule().fill(Theme.borderMuted)
+            .frame(height: 4)
             .overlay(alignment: .leading) {
                 GeometryReader { geo in
                     Capsule()
-                        .fill(percent >= 85 ? Theme.level(percent) : Theme.ink(0.4))
+                        .fill(Theme.level(percent))
                         .frame(width: geo.size.width * min(percent, 100) / 100)
                 }
             }
@@ -589,8 +633,8 @@ private struct Notice: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(Theme.title).foregroundStyle(Theme.ink(0.8))
-            Text(detail).font(Theme.caption).foregroundStyle(Theme.ink(0.5)).fixedSize(horizontal: false, vertical: true)
+            Text(title).font(Theme.title).foregroundStyle(Theme.text)
+            Text(detail).font(Theme.caption).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
     }

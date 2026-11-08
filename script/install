@@ -1,10 +1,21 @@
 #!/bin/zsh
-# Builds from source and installs Consolidatex.app plus the `acc` CLI. Safe to re-run;
-# re-running after `git pull` is how you update a source install.
+# Builds from source and installs Consolidatex.app plus the `acc` CLI; on Linux, the CLI alone.
+# Safe to re-run; re-running after `git pull` is how you update a source install.
 set -eu
 cd ${0:A:h:h}
 
 bin_dir=${ACC_BIN_DIR:-$HOME/.local/bin}
+
+if [[ $OSTYPE == linux* ]]; then
+  # Swift's runtime is linked in, so acc keeps working when the toolchain is updated or removed.
+  swift build -c release --static-swift-stdlib --product acc
+  mkdir -p $bin_dir
+  install -m 755 "$(swift build -c release --static-swift-stdlib --show-bin-path)/acc" $bin_dir/acc
+  print "installed $($bin_dir/acc version)"
+  print "  $bin_dir/acc"
+  print "\nFirst time? Run: acc setup"
+  exit
+fi
 app="${ACC_APP_DIR:-$HOME/Applications}/Consolidatex.app"
 
 source script/toolchain
