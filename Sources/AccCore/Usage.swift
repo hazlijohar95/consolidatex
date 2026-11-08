@@ -18,11 +18,11 @@ public struct Usage: Codable, Equatable, Sendable {
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             model = try c.decodeIfPresent(String.self, forKey: .model)
-            usedPercentage = try c.decode(Double.self, forKey: .usedPercentage)
+            usedPercentage = Self.bounded(percentage: try c.decode(Double.self, forKey: .usedPercentage))
             resetsAt = try c.decodeIfPresent(Date.self, forKey: .resetsAt)
             readAt = try c.decodeIfPresent(Date.self, forKey: .readAt)
             // Files written before windows carried minutes have only a label: "5h", "7d", "30d".
-            minutes = try c.decodeIfPresent(Int.self, forKey: .minutes) ?? Self.minutes(label: c.decode(String.self, forKey: .label))
+            minutes = Self.bounded(minutes: try c.decodeIfPresent(Int.self, forKey: .minutes) ?? Self.minutes(label: c.decode(String.self, forKey: .label)))
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -35,17 +35,23 @@ public struct Usage: Codable, Equatable, Sendable {
         }
 
         static func minutes(label: String) -> Int {
-            guard let unit = label.last, let n = Int(label.dropLast()) else { return 0 }
+            guard let unit = label.last, let n = Int(label.dropLast()).map({ bounded(minutes: $0) }) else { return 0 }
             return switch unit { case "d": n * 1440; case "h": n * 60; case "m": n; default: 0 }
         }
 
         public init(minutes: Int, model: String? = nil, usedPercentage: Double, resetsAt: Date?, readAt: Date? = nil) {
-            self.minutes = minutes
+            self.minutes = Self.bounded(minutes: minutes)
             self.model = model
-            self.usedPercentage = usedPercentage
+            self.usedPercentage = Self.bounded(percentage: usedPercentage)
             self.resetsAt = resetsAt
             self.readAt = readAt
         }
+
+        /// Readings come from other programs' files and replies. A number no limit could have (not finite,
+        /// past 1000%, longer than a year) would otherwise trap where it's rounded for display, on every
+        /// refresh while it's stored, so it's held to that range on the way in.
+        static func bounded(percentage: Double) -> Double { percentage.isFinite ? min(max(percentage, 0), 1000) : 0 }
+        static func bounded(minutes: Int) -> Int { min(max(minutes, 0), 527_040) }
 
         /// "5h", "7d", "7d Fable".
         public var label: String { [Self.label(minutes: minutes), model].compactMap { $0 }.joined(separator: " ") }

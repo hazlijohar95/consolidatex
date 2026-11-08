@@ -36,8 +36,8 @@ public enum Sessions {
     /// still going when the account ran out.
     public static func recent(_ account: Account, since: Date, limit: Int, home: String = userHome()) -> [Conversation] {
         switch account.tool {
-        case .claude: ClaudeSupport.recentConversations(account, home: home, since: since, limit: limit)
-        case .codex: CodexSupport.recentConversations(account, home: home, since: since, limit: limit)
+        case .claude: ClaudeSupport.recentConversations(account, home: home, since: since, limit: limit).filter { isPlainID($0.id) }
+        case .codex: CodexSupport.recentConversations(account, home: home, since: since, limit: limit).filter { isPlainID($0.id) }
         case .opencode: []
         }
     }
@@ -51,7 +51,15 @@ public enum Sessions {
             case .opencode: []
             }
         }
+        .filter { isPlainID($0.id) }
         .sorted { $0.modified > $1.modified }
+    }
+
+    /// A conversation id is passed to the tool as an argument, and comes from a file anything running as
+    /// this user could write, so only letters, digits, `-` and `_`, not starting with `-`, get that far.
+    static func isPlainID(_ id: String) -> Bool {
+        !id.isEmpty && !id.hasPrefix("-")
+            && id.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_") }
     }
 
     public static func copy(_ session: Session, to account: Account, home: String = userHome()) throws {

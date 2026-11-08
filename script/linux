@@ -5,7 +5,7 @@
 set -eu -o pipefail
 cd ${0:A:h:h}
 
-image=swift:6.4-noble
+image=${SWIFT_IMAGE:-swift:6.4-noble}  # SWIFT_IMAGE=swift:6.1-noble checks an older compiler
 files=(${(0)"$(git ls-files -z --cached --others --exclude-standard)"})
 files=(${^files}(N))  # drops tracked files deleted in the working tree
 

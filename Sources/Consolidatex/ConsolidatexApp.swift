@@ -434,7 +434,7 @@ final class Model: ObservableObject {
             return
         }
         if account.tool.spec.loginNeedsTerminal {
-            openInTerminal("\(Self.acc) login \(account.id)")
+            openInTerminal("\(Self.acc) login \(Self.quoted(account.id))")
             logins[account.id] = .inTerminal(app: terminal.name)
             return
         }

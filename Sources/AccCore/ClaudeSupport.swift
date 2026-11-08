@@ -89,16 +89,20 @@ public enum ClaudeSupport {
     }
 
     /// Adds or replaces a user-scope MCP server, through claude itself so its own file locking applies.
+    /// claude takes the definition only as an argument, so for the moment it runs, other users who can
+    /// see this user's process arguments can see it too, keys included: Linux shows them to every user
+    /// unless /proc is mounted with hidepid; macOS shows them to none. claude's output can repeat the
+    /// definition, so a failure reports only its exit status.
     public static func addMCPServer(_ runner: Runner, _ name: String, definition: NSDictionary, to account: Account) throws {
         let json = String(decoding: try JSONSerialization.data(withJSONObject: definition, options: [.sortedKeys]), as: UTF8.self)
         if mcpServers(account)[name] != nil { try removeMCPServer(runner, name, from: account) }
-        let (code, output) = try runner.capture(["mcp", "add-json", "--scope", "user", name, json], account: account)
-        guard code == 0 else { throw AccError.toolFailed("claude", "mcp add-json \(name) exited \(code): \(String(decoding: output, as: UTF8.self))") }
+        let (code, _) = try runner.capture(["mcp", "add-json", "--scope", "user", name, json], account: account)
+        guard code == 0 else { throw AccError.toolFailed("claude", "mcp add-json \(name) exited \(code)") }
     }
 
     public static func removeMCPServer(_ runner: Runner, _ name: String, from account: Account) throws {
-        let (code, output) = try runner.capture(["mcp", "remove", "--scope", "user", name], account: account)
-        guard code == 0 else { throw AccError.toolFailed("claude", "mcp remove \(name) exited \(code): \(String(decoding: output, as: UTF8.self))") }
+        let (code, _) = try runner.capture(["mcp", "remove", "--scope", "user", name], account: account)
+        guard code == 0 else { throw AccError.toolFailed("claude", "mcp remove \(name) exited \(code)") }
     }
 
     /// Claude Code names a project's folder after its path with every non-alphanumeric character as "-".
@@ -121,14 +125,17 @@ public enum ClaudeSupport {
     static func recentConversations(_ account: Account, home: String, since: Date, limit: Int) -> [Sessions.Conversation] {
         let fm = FileManager.default
         let projects = URL(fileURLWithPath: account.folder(home: home) + "/projects")
-        let modified = { (url: URL) in (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast }
-        let transcripts = ((try? fm.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil)) ?? [])
-            .flatMap { (try? fm.contentsOfDirectory(at: $0, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] }
-            .filter { $0.pathExtension == "jsonl" }
-            .map { (url: $0, modified: modified($0)) }
-            .filter { $0.modified >= since }
-            .sorted { $0.modified > $1.modified }
-        return transcripts.prefix(limit).compactMap { conversation(in: $0.url) }
+        let folders: [URL] = (try? fm.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil)) ?? []
+        let files: [URL] = folders.flatMap { folder -> [URL] in
+            (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        }
+        var recent: [(url: URL, modified: Date)] = []
+        for file in files where file.pathExtension == "jsonl" {
+            let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            if modified >= since { recent.append((file, modified)) }
+        }
+        recent.sort { $0.modified > $1.modified }
+        return recent.prefix(limit).compactMap { conversation(in: $0.url) }
     }
 
     /// The conversation id and the folder it started in.

@@ -20,7 +20,9 @@ The account on a tool's default folder runs with the variable unset. Setting it 
 
 - `Sources/AccCore` is the model. It has no UI and no process-wide state. It holds the account registry, the rules for changing it, the per-tool knowledge, and usage.
 - `Sources/acc/main.swift` is the `acc` command. It parses arguments and calls AccCore.
-- `Sources/Consolidatex` is the menu bar app. `Model` owns the registry state and `UsageMonitor` owns usage. The SwiftUI views are `UsagePanel` and `AccountsView`.
+- `Sources/Consolidatex` is the menu bar app. `Model` owns the registry state and `UsageMonitor` owns usage. The SwiftUI views are `UsagePanel` and `AccountsView`. The app is macOS only; `Package.swift` leaves it out elsewhere.
+
+AccCore and `acc` also build on Linux. Code that differs by platform sits behind `#if` in one place each: the process table (`ProcessTable+Darwin.swift`, `ProcessTable+Linux.swift`), where Claude's login is read, extended attributes (through `Sources/CXattr`, since Swift's Glibc module leaves out `<sys/xattr.h>`), and file times. `script/linux` runs the whole test suite in a Linux container, and CI runs it on every push.
 
 A rule that both the CLI and the app need belongs in AccCore. If a view starts deciding what counts as an account, a folder or a limit, move that decision down.
 
@@ -96,7 +98,7 @@ Two decisions read from usage:
 The menu bar app acts on limits, not only shows them. After every refresh, `UsageMonitor` reports which accounts reached a limit and which came off one (`LimitChanges`). `Model.follow` then does three things:
 
 1. **It moves new sessions.** `Registry.autoPick` in `AutoSwitch.swift` decides when. If a tool's current account is at a limit, it picks the account with the most left. A `Detour` records the move, from the account the person picked to the one the app chose. Once the picked account has room again, `autoPick` sends new sessions back along the detour. `Detour.after` keeps the person's pick across several moves in a row. A pick by hand, or a current account that no longer matches the detour, drops the detour, so the app never undoes someone's own choice.
-2. **It offers to move the conversation.** For an account that hit its limit while active, `Sessions.latest` finds its newest conversation and the folder it ran in. The notification's **Continue There** action opens Terminal and runs `acc continue <target> --session <id>` in that folder.
+2. **It moves the conversation, or offers to.** For an account that hit its limit while active, `Sessions.latest` finds its newest conversation and the folder it ran in. The notification's **Continue There** action, and the row's Continue button, run `acc continue <target> --session <id>` in that folder, in the picked terminal. `TerminalApp` knows each terminal by bundle ID and how to start a command in it: Terminal, Ghostty and iTerm open a `.command` script that deletes itself, which needs no automation permission, and Rex, which opens no scripts, takes it through `rex run`. With **Continue Conversations Automatically** on, `continueRunning` does this without asking, for as many of the account's conversations as it has running sessions, taken from transcripts written in the last 10 minutes (`Sessions.recent`). It passes `--prompt` so each picks its work back up, opens the windows without taking focus, and posts its notification only once they opened, saying which didn't.
 3. **It announces resets** that the switch back didn't already announce.
 
 Resets happen by the clock, not only when a new reading arrives, so this runs on every refresh rather than only when readings change.
@@ -154,6 +156,8 @@ A slow network request never delays the local numbers. Blocking work, such as wa
 
 ⌥⌘A opens `QuickSwitchView`, for switching from any app, and ⇧⌥⌘A opens the menu bar panel. Both open in a `FloatingPanel`, a window in the middle of the screen that closes on Esc or a click elsewhere. SwiftUI has no way to open a menu bar extra from code, and on macOS 27 clicking its status item from code does nothing, so the panel can't open under its icon. `HotKey` registers the shortcuts through Carbon's hot-key API, which needs no accessibility permission. Each shortcut's handler passes on presses that aren't its own, since the first handler to claim a press ends it.
 
+The look follows opencode's design tokens, in `Theme`: solid surfaces (`background`, `raised`), three text greys (`text`, `muted`, `faint`), hairline borders, and state colours used only near a limit (`Theme.level`). Primary and secondary actions use `PrimaryButtonStyle` and `GhostButtonStyle`. A view takes its colours from these names rather than from opacities of its own. The ⇧⌥⌘A panel opens with nothing focused, so no focus ring shows until Tab.
+
 In the panel, clicking an account asks for confirmation before switching, because a switch changes every terminal's next session. After the first switch, if the shell line is missing, the panel offers to add it and to turn on the status line. Right-click opens **Rename…**, **Log In Again** and **Show in Finder**. Each row's interaction is one `RowFocus` value: confirming, renaming, or none. A row receives everything it can do as one `RowActions` value, so a row only displays and calls back.
 
 ## Moving a conversation
@@ -168,7 +172,7 @@ What the copy holds is the first account's work, and the readers of usage take e
 
 ## Tests
 
-`script/test` runs the unit tests in `Tests/AccCoreTests`, then `Tests/e2e.sh`. The end-to-end script builds a throwaway `HOME` with stub `claude`, `codex` and `opencode` scripts. It then drives the real `acc` binary and the shell functions it generates through setup, switching, `@account`, usage, `continue`, `doctor`, `sync`, rename and removal. The unit tests use the same kind of stub for `codex app-server`. They also include a reply copied from a real Codex.
+`script/test` runs the unit tests in `Tests/AccCoreTests`, then `Tests/e2e.sh`, and `script/linux` runs the same in a Linux container. The end-to-end script builds a throwaway `HOME` with stub `claude`, `codex` and `opencode` scripts. It then drives the real `acc` binary and the shell functions it generates through setup, switching, `@account`, usage, `continue`, `doctor`, `sync`, rename and removal. The unit tests use the same kind of stub for `codex app-server`. They also include a reply copied from a real Codex.
 
 ## Adding a tool
 
@@ -182,3 +186,5 @@ What the copy holds is the first account's work, and the readers of usage take e
 - `TranscriptLog` walks each Claude Code account's whole `projects/` folder once a minute to find new transcripts. An FSEvents stream would replace the walk. Comparing folders' modification times would not, because appending to an existing transcript doesn't change its folder.
 - Anthropic's usage endpoint and `codex app-server`'s `account/rateLimits/read` aren't documented. A change on their side shows up as a red message under each affected account.
 - Kiro CLI keeps its login in one database that no setting moves, so it can't have separate accounts.
+- Automatic continue picks conversations by when their transcripts were last written, not by which sessions are open: neither tool says which process writes which transcript. A conversation closed just before the limit can be reopened, and one idle for more than 10 minutes is left.
+- On Linux, a session shows the app it runs in only when the desktop starts apps in their own systemd units or slices (uwsm, GNOME, KDE). Elsewhere it shows as Background.

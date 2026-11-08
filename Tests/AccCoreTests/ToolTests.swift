@@ -339,6 +339,23 @@ func write(_ text: String, to path: String) {
         #expect(try StatusLineSetup.install(settings: path, command: "acc statusline") == .installed)
         #expect((try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: path)))) != nil)
     }
+
+    /// Claude Code runs the status line in each project's folder, where a relative path could run the project's own file.
+    @Test func statusLineRunsAnAbsoluteQuotedAcc() throws {
+        let home = tempHome()
+        let shared = home + "/dotfiles/settings.json"
+        write("{}", to: shared)
+        try FileManager.default.createDirectory(atPath: home + "/.claude", withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: home + "/.claude/settings.json", withDestinationPath: shared)
+        let primary = Account(id: "main", tool: .claude, label: "Main", configDir: nil)
+        let relative = FileManager.default.currentDirectoryPath + "/my tools/acc"
+        #expect(try StatusLineSetup.install(for: primary, acc: "my tools/acc", home: home) == .installed)
+        let settings = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: shared))) as? [String: Any]
+        #expect((settings?["statusLine"] as? [String: Any])?["command"] as? String == "'\(relative)' statusline")
+        // The shared file is still shared.
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.claude/settings.json") == shared)
+        #expect(try StatusLineSetup.install(for: primary, acc: "my tools/acc", home: home) == .alreadyInstalled)
+    }
 }
 
 @Suite struct AppInstalling {
@@ -514,6 +531,8 @@ func write(_ text: String, to path: String) {
         #expect(u.windows.map(\.usedPercentage) == [40, 12])
 
         write("#!/bin/sh\ncat >/dev/null\n", to: stub)
+        // An atomic rewrite is a new file, which older Foundations on Linux don't make executable.
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub)
         #expect(CodexSupport.liveUsage(Runner(tool: .codex, executable: stub), account, timeout: 1) == .failed("Codex didn't start its app server"))
     }
 
@@ -622,6 +641,18 @@ func write(_ text: String, to path: String) {
         write(#"{"type":"summary"}"# + "\n", to: projects + "/-work-app/newest.jsonl")
         let account = Account(id: "c", tool: .claude, label: "C", configDir: "~/.claude-c")
         #expect(Sessions.latest(account, home: home) == nil)
+    }
+
+    /// An id reaches the tool as an argument, so one that reads as a flag never gets there.
+    @Test func onlyPlainConversationIDsAreResumed() throws {
+        let home = tempHome(), projects = home + "/.claude-c/projects"
+        for id in ["--dangerously-skip-permissions", "b17c-42_a"] {
+            write(#"{"type":"user","cwd":"/work/app"}"# + "\n", to: projects + "/-work-app/\(id).jsonl")
+        }
+        let account = Account(id: "c", tool: .claude, label: "C", configDir: "~/.claude-c")
+        #expect(Sessions.recent(account, since: .distantPast, limit: 5, home: home).map(\.id) == ["b17c-42_a"])
+        #expect(Sessions.isPlainID("0199a1b2-aaaa-7e5f-8a9b-0c1d2e3f4a5b"))
+        #expect(!Sessions.isPlainID("-x") && !Sessions.isPlainID("a b") && !Sessions.isPlainID("a;b") && !Sessions.isPlainID(""))
     }
 
     @Test func codexTakesTheNewestRollout() {

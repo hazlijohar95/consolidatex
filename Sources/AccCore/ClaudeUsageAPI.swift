@@ -35,7 +35,10 @@ enum ClaudeUsageAPI {
         switch http.statusCode {
         case 200: return parse(data, at: now).map(Outcome.reading) ?? .failed("Usage API sent a reply acc can't read")
         case 401: return .failed("Anthropic rejected this login; log in again")
-        case 429: return .retryAfter(http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init) ?? LiveUsage.spacing)
+        case 429:
+            // A day at most, and never a value that isn't a number of seconds.
+            let wait = http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init).flatMap { $0.isFinite ? min(max($0, 0), 86_400) : nil }
+            return .retryAfter(wait ?? LiveUsage.spacing)
         default: return .failed("Usage API returned HTTP \(http.statusCode)")
         }
     }

@@ -42,7 +42,8 @@ public struct RegistryStore: Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         var data = try encoder.encode(registry)
         data.append(0x0A)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // It names every account's email and folder, so only its owner may read it.
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // Stage next to the target so rename(2) stays on one volume and is atomic.
         let staging = directory.appendingPathComponent(".accounts.json.\(getpid()).tmp")
         do {

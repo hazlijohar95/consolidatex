@@ -13,7 +13,10 @@ jobs:
     env:
       VERSION: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The tests and build run with the signing secrets around; they don't need a push token too.
+          persist-credentials: false
 
       - name: Check the tag matches acc's version
         run: |

@@ -15,7 +15,8 @@ let usage = """
       acc report                 the last 7 days: weekly use and hours capped, per account
       acc continue [<account>] [--session <id>] [--prompt <text>]
                                  resume this folder's latest conversation on another account
-                                 (default: the roomiest), sending <text> first; Claude Code and Codex
+                                 (default: the roomiest), with <text> as its next message;
+                                 Claude Code and Codex
       acc run <account> [--] [args]
                                  run the account's tool once on it, without switching
       acc add <tool> [<name>] [--id <id>] [--dir <folder>]
@@ -24,7 +25,7 @@ let usage = """
       acc rename <account> <name> / acc rm <account>
       acc doctor [--fix]         check logins, shared config and setup
       acc sync [--prune]         share each tool's config from its primary account
-      acc ui                     open the Consolidatex window
+      acc ui                     open the Consolidatex window (macOS)
       acc version
 
     Tools: claude, codex, opencode. After `acc setup`, typing `claude`, `codex` or `opencode`
@@ -211,7 +212,8 @@ func launch(_ tool: Tool, _ arguments: [String]) throws -> Never {
     var args = arguments
     let runner = try Runner.locate(tool)
     // `@account` is asked for on this command line, so it beats a variable inherited from a parent session.
-    if let first = args.first, first.hasPrefix("@"), first.count > 1 {
+    // A first argument with a space in it is a prompt that mentions a file (`claude "@README.md explain"`).
+    if let first = args.first, first.hasPrefix("@"), first.count > 1, !first.contains(where: \.isWhitespace) {
         let account = try store.load().resolve(String(first.dropFirst()), tool: tool)
         args.removeFirst()
         throw runner.exec(account: account, arguments: args)

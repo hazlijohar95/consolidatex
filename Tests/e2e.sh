@@ -109,6 +109,7 @@ acc 3 >/dev/null
 check 'switch by position'                "$(current codex)" codex-default
 check '@ one-off'                         "$(sh 'codex @side x')" "CODEX=$H/.codex-side ARGS=x"
 check '@ does not switch'                 "$(current codex)" codex-default
+check '@ with a space is a prompt'         "$(sh 'claude "@README.md explain"' | sed 's/.*ARGS=/ARGS=/')" 'ARGS=@README.md explain'
 check '@ resolves within the tool'        "$(sh 'claude @side' ; echo "exit $?")" $'acc: no account matches \'side\' (see: acc ls)\nexit 1'
 check 'explicit variable wins'            "$(sh 'CODEX_HOME=/pinned codex')" 'CODEX=/pinned ARGS='
 check '@ beats an inherited variable'     "$(sh 'CODEX_HOME=/pinned codex @side x')" "CODEX=$H/.codex-side ARGS=x"

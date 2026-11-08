@@ -185,3 +185,17 @@ private enum Replies {
         #expect(await ClaudeUsageAPI.fetch(with: nil, at: t0) == .failed("Not logged in"))
     }
 }
+
+@Suite struct ImpossibleNumbers {
+    /// A reading is stored before anything shows it, so a number no limit could have would trap on every refresh.
+    @Test func readingsAreHeldToNumbersALimitCanHave() throws {
+        let body = #"{"limits":[{"group":"weekly","percent":1e300},{"group":"session","percent":-5}]}"#
+        #expect(ClaudeUsageAPI.parse(Data(body.utf8), at: t0)?.windows.map(\.usedPercentage).sorted() == [0, 1000])
+        #expect(Usage.Window(minutes: .max, usedPercentage: .nan, resetsAt: nil).usedPercentage == 0)
+        #expect(Usage.Window(minutes: .max, usedPercentage: 50, resetsAt: nil).duration == 527_040 * 60)
+        let stored = #"{"usedPercentage":1e308,"label":"9999999999999999d"}"#
+        let window = try JSONDecoder().decode(Usage.Window.self, from: Data(stored.utf8))
+        #expect(window.usedPercentage == 1000)
+        #expect(UsageFormat.summary(Usage(windows: [window], recordedAt: t0), at: t0).hasPrefix(window.label + " 1000%"))
+    }
+}

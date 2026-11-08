@@ -197,26 +197,41 @@ public enum Discovery {
 public enum StatusLineSetup {
     public enum Result: Equatable, Sendable { case alreadyInstalled, installed, otherStatusLine(String) }
 
-    /// For every Claude Code account sharing `primary`'s settings, run by the `acc` at `acc`.
+    /// For every Claude Code account sharing `primary`'s settings, run by the `acc` at `acc`. Claude Code
+    /// runs the command in each session's folder, so a relative path would run whatever a project keeps
+    /// there; the path is made absolute first, and quoted if it needs it. Links are kept, so an `acc`
+    /// linked from a package manager's bin folder still works after the package updates.
     public static func install(for primary: Account, acc: String, home: String = userHome()) throws -> Result {
-        try install(settings: primary.folder(home: home) + "/settings.json", command: acc + " statusline")
+        let absolute = URL(fileURLWithPath: acc).standardizedFileURL.path
+        return try install(settings: primary.folder(home: home) + "/settings.json", command: shellWord(absolute) + " statusline")
+    }
+
+    /// `path` as one shell word: as is when it's only safe characters, else single-quoted.
+    static func shellWord(_ path: String) -> String {
+        let safe = path.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) && $0.isASCII || "/._-+".unicodeScalars.contains($0) }
+        return safe ? path : "'" + path.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
     }
 
     public static func install(settings path: String, command: String) throws -> Result {
         let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? "{}\n"
         let root = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] ?? [:]
         if let existing = (root["statusLine"] as? [String: Any])?["command"] as? String {
-            return existing.contains("acc statusline") ? .alreadyInstalled : .otherStatusLine(existing)
+            return existing.contains("acc statusline") || existing.contains("acc' statusline") ? .alreadyInstalled : .otherStatusLine(existing)
         }
         guard let brace = text.firstIndex(of: "{") else { throw AccError.system("\(path) is not a JSON object") }
-        let entry = #"  "statusLine": { "type": "command", "command": "\#(command)" }"#
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .withoutEscapingSlashes
+        let quotedCommand = String(decoding: try encoder.encode(command), as: UTF8.self)
+        let entry = #"  "statusLine": { "type": "command", "command": \#(quotedCommand) }"#
         let rest = text[text.index(after: brace)...]
         let isEmpty = rest.trimmingCharacters(in: .whitespacesAndNewlines) == "}"
         let updated = String(text[...brace]) + "\n" + entry + (isEmpty ? "\n" : ",") + (isEmpty ? "}\n" : String(rest))
         guard (try? JSONSerialization.jsonObject(with: Data(updated.utf8))) != nil else {
             throw AccError.system("could not add the status line to \(path) safely; add it by hand")
         }
-        try updated.write(toFile: path, atomically: false, encoding: .utf8)
+        // Every account shares this file, often through a link, so the link's target is replaced in one step.
+        let target = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        try updated.write(toFile: target, atomically: true, encoding: .utf8)
         return .installed
     }
 }
